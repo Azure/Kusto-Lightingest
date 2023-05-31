@@ -1,0 +1,28 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <OutputPath>$(KustoDir)\$(Bin)\$(Configuration)\Kustools\</OutputPath>
+    <PlatformTarget>AnyCPU</PlatformTarget>
+  </PropertyGroup>
+  <ItemGroup Condition="'$(TARGETING_NETCORE)' == 'false'">
+    <Reference Include="System.IO.Compression" />
+    <Reference Include="System.IO.Compression.FileSystem" />
+    <Reference Include="Microsoft.CSharp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\Client\Kusto.Data\Kusto.Data.csproj" />
+    <ProjectReference Include="..\..\Client\Kusto.Ingest\Kusto.Ingest.csproj" />
+    <ProjectReference Include="..\..\Common\Kusto.Cloud.Platform.Azure\Kusto.Cloud.Platform.Azure.csproj" />
+    <ProjectReference Include="..\..\Common\Kusto.Cloud.Platform\Kusto.Cloud.Platform.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Azure.KeyVault.Core" />
+    <PackageReference Include="Newtonsoft.Json" />
+    <PackageReference Include="System.ComponentModel.EventBasedAsync" />
+    <PackageReference Include="System.Dynamic.Runtime" />
+    <PackageReference Include="System.Linq.Queryable" />
+    <PackageReference Include="System.Net.Requests" />
+    <PackageReference Include="System.Threading.Tasks.Dataflow" />
+    <PackageReference Include="WindowsAzure.Storage" />
+  </ItemGroup>
+</Project>
