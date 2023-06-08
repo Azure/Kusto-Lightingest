@@ -6,12 +6,13 @@ using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
 using System.Threading;
-using Microsoft.WindowsAzure.Storage.Blob;
-using Newtonsoft.Json;
 
+using Kusto.Cloud.Platform.AWS.PersistentStorage;
 using Kusto.Cloud.Platform.Azure.Storage;
+using Kusto.Cloud.Platform.Storage.PersistentStorage;
 using Kusto.Cloud.Platform.Utils;
 using Kusto.Data;
+using Newtonsoft.Json;
 
 namespace LightIngest
 {
@@ -31,7 +32,7 @@ namespace LightIngest
             }
         }
 
-        internal static long? GetPositiveLongProperty(IDictionary<string, string> bag, string propertyName)
+        internal static long? GetPositiveLongProperty(IReadOnlyDictionary<string, string> bag, string propertyName)
         {
             if (TryGetValueAsString(bag, propertyName, caseSensitive: false, out string valueAsString))
             {
@@ -46,7 +47,7 @@ namespace LightIngest
             return null;
         }
 
-        internal static DateTime? GetDateTimeProperty(IDictionary<string, string> bag, string propertyName)
+        internal static DateTime? GetDateTimeProperty(IReadOnlyDictionary<string, string> bag, string propertyName)
         {
             if (TryGetValueAsString(bag, propertyName, caseSensitive: false, out string valueAsString))
             {
@@ -86,7 +87,7 @@ namespace LightIngest
                     // FOr larger files, we will not rely on the last 4 bytes, as they are modulo 4GB and revert to estimation.
                     if (fileInfo.Length > ReliableGzipSizeEstimationCutoff)
                     {
-                        fileSize = (long) (fileInfo.Length * estimatedCompressionRatio);
+                        fileSize = (long)(fileInfo.Length * estimatedCompressionRatio);
                     }
                     else
                     {
@@ -114,29 +115,31 @@ namespace LightIngest
             return 0L;
         }
 
-        internal static long EstimateBlobSize(ICloudBlob cloudBlob, double estimatedCompressionRatio)
+        internal static long EstimateFileSize(IPersistentStorageFile cloudFile, double estimatedCompressionRatio)
         {
-            long? estimatedSizeBytes = null;
-
-            estimatedSizeBytes = GetPositiveLongProperty(cloudBlob.Metadata, Constants.BlobMetadaRawDataSizeLegacy);
-            if (estimatedSizeBytes.HasValue)
+            if (cloudFile is IFileWithMetadata cloudFileWithMetadata)
             {
-                return estimatedSizeBytes.Value;
+                IReadOnlyDictionary<string, string> metadata = cloudFileWithMetadata.GetFileMetaDataAsync().ResultEx();
+                long? estimatedSizeBytes = GetPositiveLongProperty(metadata, (cloudFile is S3PersistentStorageFile) ? Constants.AwsMetadaRawDataSize : Constants.BlobMetadaRawDataSizeLegacy);
+                if (estimatedSizeBytes.HasValue)
+                {
+                    return estimatedSizeBytes.Value;
+                }
+
+                estimatedSizeBytes = GetPositiveLongProperty(metadata, (cloudFile is S3PersistentStorageFile) ? Constants.AwsMetadaRawDataSize : Constants.BlobMetadaRawDataSize);
+                if (estimatedSizeBytes.HasValue)
+                {
+                    return estimatedSizeBytes.Value;
+                }
             }
 
-            estimatedSizeBytes = GetPositiveLongProperty(cloudBlob.Metadata, Constants.BlobMetadaRawDataSize);
-            if (estimatedSizeBytes.HasValue)
-            {
-                return estimatedSizeBytes.Value;
-            }
-
-            long blobSize = cloudBlob.Properties.Length;
-            string blobName = cloudBlob.Name;
+            long blobSize = cloudFile.GetLength();
+            string blobName = cloudFile.GetFileName();
 
             // TODO: we need to add proper handling per format
             if (blobName.EndsWith(".zip", StringComparison.OrdinalIgnoreCase) || blobName.EndsWith(".gz", StringComparison.OrdinalIgnoreCase))
             {
-                blobSize = (long) (blobSize * estimatedCompressionRatio);
+                blobSize = (long)(blobSize * estimatedCompressionRatio);
             }
 
             return blobSize;
@@ -147,25 +150,28 @@ namespace LightIngest
             return TryParseDateTimeUtcFromString(path, fileCreationTimeFormat);
         }
 
-        internal static DateTime? InferBlobCreationTimeUtc(ICloudBlob cloudBlob, DateTimeFormatPattern blobCreationTimeFormat)
+        internal static DateTime? InferFileCreationTimeUtc(IPersistentStorageFile cloudFile, DateTimeFormatPattern blobCreationTimeFormat)
         {
             // Metadata always wins, as it is more deliberate
-            DateTime? creationTimeUtc = null;
-
-            creationTimeUtc = GetDateTimeProperty(cloudBlob.Metadata, Constants.BlobMetadataCreationTimeLegacy);
-            if (creationTimeUtc.HasValue)
+            if (cloudFile is IFileWithMetadata cloudFileWithMetadata)
             {
-                return creationTimeUtc.Value;
+                var metadata = cloudFileWithMetadata.GetFileMetaDataAsync().ResultEx();
+                DateTime? creationTimeUtc = GetDateTimeProperty(metadata, (cloudFile is S3PersistentStorageFile) ? Constants.AwsMetadataCreationTimeLegacy : Constants.BlobMetadataCreationTimeLegacy);
+                if (creationTimeUtc.HasValue)
+                {
+                    return creationTimeUtc.Value;
+                }
+
+                creationTimeUtc = GetDateTimeProperty(metadata, (cloudFile is S3PersistentStorageFile) ? Constants.AwsMetadataCreationTimeUtc : Constants.BlobMetadataCreationTimeUtc);
+                if (creationTimeUtc.HasValue)
+                {
+                    return creationTimeUtc.Value;
+                }
             }
 
-            creationTimeUtc = GetDateTimeProperty(cloudBlob.Metadata, Constants.BlobMetadataCreationTimeUtc);
-            if (creationTimeUtc.HasValue)
-            {
-                return creationTimeUtc.Value;
-            }
 
             // We use the entire blob URI absolute path (container and blob path) to infer creationTime
-            return TryParseDateTimeUtcFromString(cloudBlob.Uri.AbsolutePath, blobCreationTimeFormat);
+            return TryParseDateTimeUtcFromString(cloudFile.GetFileUri(), blobCreationTimeFormat);
         }
 
         internal static void TryDeleteFile(string path)
@@ -176,12 +182,11 @@ namespace LightIngest
             }
         }
 
-        internal static void TryDeleteBlob(string blobUriWithSas)
+        internal static void TryDeleteBlob(IPersistentStorageFile blobRef)
         {
-            var blobRef = CloudResourceUriParser.TryCreateCloudBlob(blobUriWithSas);
             if (blobRef != null)
             {
-                blobRef.Delete();
+                blobRef.DeleteIfExistsAsync().WaitEx();
             }
         }
 
@@ -229,13 +234,15 @@ namespace LightIngest
 
         internal static bool IsBlobStorageUri(string input, out string error)
         {
-            error = string.Empty;
-
             try
             {
-                var blobContainer =
+                var container =
                     CloudResourceUriParser.TryCreateCloudBlobContainer(input, out error, keyOrSasMandatory: false);
-
+                if (container == null)
+                {
+                    return S3PersistentStorageUri.IsAmazonS3Uri(input);
+                } 
+                
                 return true;
             }
             catch (Exception ex)
@@ -369,7 +376,7 @@ namespace LightIngest
         }
 
         // Allow handling case-insensitive collections
-        private static bool TryGetValueAsString(IDictionary<string, string> bag, string propertyName, bool caseSensitive, out string valueAsString)
+        private static bool TryGetValueAsString(IReadOnlyDictionary<string, string> bag, string propertyName, bool caseSensitive, out string valueAsString)
         {
             valueAsString = null;
 

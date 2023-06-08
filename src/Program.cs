@@ -26,7 +26,7 @@ namespace LightIngest
             "Connection string pointing at a Kusto service endpoint,\r\n" +
             "For example, \"https://ingest-contoso.westus.kusto.windows.net;Fed=true\"\r\n" +
             "Database can also be specified within the connection string: \"https://ingest-contoso.westus.kusto.windows.net;Fed=true;Initial Catalog=NetDefaultDB\"\r\n" +
-            "For complete Kusto Connection String documentation, see https://docs.microsoft.com/en-us/azure/kusto/api/connection-strings/kusto",
+            "For complete Kusto Connection String documentation, see https://docs.microsoft.com/azure/kusto/api/connection-strings/kusto",
             DefaultValue = "https://ingest-contoso.westus.kusto.windows.net;Fed=true")]
         public string ConnectionString = "https://ingest-contoso.westus.kusto.windows.net;Fed=true";
 
@@ -53,20 +53,21 @@ namespace LightIngest
         [CommandLineArg(
             "sourcePath",
             "When the source data to ingest resides on a local disk, this is the path to the directory where the data is located\r\n" +
-            "When the source data resides on blob storage, this is the root URI of the blob container, affixed with an account key or SAS\r\n" +
+            "When the source data resides on cloud storage, this is the root URI of the container, adls filesystem or s3 bucket, affixed with an account key or SAS\r\n" +
             "For example, \"https://ACCOUNT_NAME.blob.core.windows.net/CONTAINER_NAME?SAS_TOKEN\" or \"https://ACCOUNT_NAME.blob.core.windows.net/CONTAINER_NAME;ACCOUNT_KEY\"",
+            "For the complete list see: \"https://learn.microsoft.com/en-us/azure/data-explorer/kusto/api/connection-strings/storage-connection-strings#storage-connection-string-templates\"",
             ShortName = "source", Mandatory = true)]
         public string SourcePath = null;
 
         [CommandLineArg(
             "pattern",
-            "A wildcard pattern, such as ‘MyData*.csv’, that indicates which source data files or blobs to ingest.",
+            "A wildcard pattern, such as ‘MyData*.csv’, that indicates which source data files or blobs to ingest. This includes the folder path.",
             Mandatory = false)]
         public string Pattern = "*.csv";
 
         [CommandLineArg(
             "prefix",
-            "When the source data resides on blob storage, this is the URL prefix shared by all blobs, excluding the container name.\r\n" +
+            "When the source data resides on blob storage, this is the URL prefix shared by all files or blobs, excluding the container name.\r\n" +
             "For example, 'Dir1/Dir2'",
             Mandatory = false)]
         public string Prefix = null;
@@ -74,7 +75,7 @@ namespace LightIngest
         [CommandLineArg(
             "tag",
             "A name/value pair (or simply a string) that is attached to the ingested data as ‘extent tags’. This switch can be used multiple times.\r\n" +
-            "See https://docs.microsoft.com/en-us/azure/kusto/management/extents-overview#extent-tagging for details",
+            "See https://docs.microsoft.com/azure/kusto/management/extents-overview#extent-tagging for details",
             Mandatory = false)]
         public string[] Tags = null;
 
@@ -88,7 +89,7 @@ namespace LightIngest
         #region Source data format and mapping to target table, usually stable across multiple ingestion jobs
         [CommandLineArg(
             "format",
-            @"Data format. For the list of supported formats, consult https://docs.microsoft.com/en-us/azure/kusto/management/data-ingestion/#supported-data-formats",
+            @"Data format. For the list of supported formats, consult https://docs.microsoft.com/azure/kusto/management/data-ingestion/#supported-data-formats",
             ShortName = "f", Mandatory = false)]
         public string Format = string.Empty;
 
@@ -106,13 +107,13 @@ namespace LightIngest
 
         [CommandLineArg(
             "ingestionMappingPath",
-            @"Path to the ingestion mapping file. See https://docs.microsoft.com/en-us/azure/kusto/management/mappings for details.",
+            @"Path to the ingestion mapping file. See https://docs.microsoft.com/azure/kusto/management/mappings for details.",
             ShortName = "mappingPath", Mandatory = false)]
         public string IngestionMappingPath = String.Empty;
 
         [CommandLineArg(
             "ingestionMappingRef",
-            @"Pre-created ingestion mapping name to use. See https://docs.microsoft.com/en-us/azure/kusto/management/mappings for details.",
+            @"Pre-created ingestion mapping name to use. See https://docs.microsoft.com/azure/kusto/management/mappings for details.",
             ShortName = "mappingRef", Mandatory = false)]
         public string IngestionMappingName = String.Empty;
 

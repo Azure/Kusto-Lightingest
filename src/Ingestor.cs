@@ -5,27 +5,29 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Threading.Tasks.Dataflow;
-using Microsoft.WindowsAzure.Storage.Blob;
 
-using Kusto.Cloud.Platform.Azure.Storage;
+using Kusto.Cloud.Platform.Azure.Storage.PersistentStorage;
 using Kusto.Cloud.Platform.Data;
+using Kusto.Cloud.Platform.Modularization;
+using Kusto.Cloud.Platform.Security;
+using Kusto.Cloud.Platform.Storage.PersistentStorage;
 using Kusto.Cloud.Platform.Utils;
 using Kusto.Data;
 using Kusto.Data.Common;
 using Kusto.Data.Net.Client;
 using Kusto.Ingest;
-using System.Text;
+using Kusto.Common.Svc.Storage;
 
 namespace LightIngest
 {
     internal class Ingestor
     {
         #region Data members
-        private const int c_BlobListingSegmentSize = 1000;
         private const int c_BatchesLimitForSyncIngest = 64;
         private const int c_DefaultDirectIngestBatchSizeBytes = 500 * MemoryConstants._1MB;
         private const int c_MaxParallelismDegree = 256;
@@ -33,7 +35,7 @@ namespace LightIngest
         private readonly ExtendedCommandLineArgs m_args;
         private readonly KustoQueuedIngestionProperties m_ingestionProperties;
         private LoggerTracer m_logger;
-
+        private IPersistentStorageFactory m_persistentStorageFactory;
         private readonly bool m_bFileSystem;
         private readonly bool m_bWaitForIngestCompletion = false;
         private readonly TimeSpan m_ingestCompletionTimeout = TimeSpan.Zero;
@@ -74,7 +76,10 @@ namespace LightIngest
         private long m_filesUploaded = 0;
         private long m_batchesProduced = 0;
         private long m_batchesIngested = 0;
-        private long m_batchesCleanedUp = 0;
+        private Disposer m_disposer;
+
+        // PSL
+        private BlobPersistentStorageFactory2 m_blob;
         #endregion // Data members
 
         #region Statistics methods
@@ -82,6 +87,7 @@ namespace LightIngest
         {
             return $"Items discovered: [{Interlocked.Read(ref m_objectsListed),7}], filtered: [{Interlocked.Read(ref m_objectsAccepted),7}]";
         }
+
         private string QueuedIngestStats()
         {
             return $"{BasicCountersSnapshot()}, posted for ingestion: [{Interlocked.Read(ref m_objectsPosted),7}]";
@@ -90,7 +96,7 @@ namespace LightIngest
         private string DirectIngestStats()
         {
             return $"{BasicCountersSnapshot()}, uploaded to blob store: [{Interlocked.Read(ref m_filesUploaded),7}]. " +
-                   $"Batches produced: [{Interlocked.Read(ref m_batchesProduced),7}], ingested: [{Interlocked.Read(ref m_batchesIngested),7}], cleaned-up: [{Interlocked.Read(ref m_batchesCleanedUp),7}]";
+                   $"Batches produced: [{Interlocked.Read(ref m_batchesProduced),7}], ingested: [{Interlocked.Read(ref m_batchesIngested),7}]";
         }
         #endregion Statistics methods
 
@@ -144,6 +150,20 @@ namespace LightIngest
             m_ingestionProperties.IgnoreSizeLimit = m_args.NoSizeLimit;
 
             m_fixedWindowThrottlerPolicy = new FixedWindowThrottlerPolicy(args.IngestionRateCount, TimeSpan.FromSeconds(args.IngestionRateTime));
+            InitPSLFields();
+        }
+
+        private void InitPSLFields()
+        {
+            m_disposer = new Disposer(GetType().FullName, "LightIngest");
+            var serviceLocator = new ServiceLocator();
+            var hostnameValidatorFactory = new VoidServiceCalloutHostnameValidatorFactory();
+            var persistentStorageManager = KustoPersistentStorageManager.CreateAndRegister(
+                "LightIngest", serviceLocator, hostnameValidatorFactory, featureFlags: null, registerOnelakeFactory: false);
+            m_persistentStorageFactory = persistentStorageManager.Factory;
+            var azureStorageHostnameValidator = hostnameValidatorFactory.GetServiceCalloutHostnameValidator("AzureStorage");
+            m_blob = new BlobPersistentStorageFactory2(azureStorageHostnameValidator);
+            m_disposer.Add(persistentStorageManager);
         }
 
         private void Reset()
@@ -178,7 +198,6 @@ namespace LightIngest
             m_filesUploaded = 0;
             m_batchesProduced = 0;
             m_batchesIngested = 0;
-            m_batchesCleanedUp = 0;
         }
 
         internal static Ingestor CreateFromCommandLineArgs(ExtendedCommandLineArgs args,
@@ -203,7 +222,7 @@ namespace LightIngest
             using (var ingestClient = KustoIngestFactory.CreateQueuedIngestClient(kcsb))
             {
                 ActionBlock<string> listObjectsBlock = null;
-                ActionBlock<Tuple<ICloudBlob, string>> filterObjectsBlock = null;
+                ActionBlock<IPersistentStorageFile> filterObjectsBlock = null;
                 ActionBlock<DataSource> ingestBlock = null;
 
                 if (m_bFileSystem) // Data is in local files
@@ -223,17 +242,18 @@ namespace LightIngest
                         record => IngestSingle(record, m_objectsCountQuota, ingestClient, m_bFileSystem, false, m_ingestionProperties),
                         new ExecutionDataflowBlockOptions { MaxDegreeOfParallelism = ExtendedEnvironment.RestrictedProcessorCount });
 
-                    filterObjectsBlock = new ActionBlock<Tuple<ICloudBlob, string>>(
-                        blobTuple => FilterBlobs(blobTuple, m_patternRegex, m_objectsCountQuota, ingestBlock),
+                    // ListFiles calls PSL EnumerateFiles which accepts a pattern but BlobPersistentStorageFactory2 doesn't use the full pattern
+                    // but only its prefix, therefore we still have to filter ourselves.
+                    filterObjectsBlock = new ActionBlock<IPersistentStorageFile>(
+                        file => FilterFiles(file, m_patternRegex, m_objectsCountQuota, ingestBlock),
                         new ExecutionDataflowBlockOptions { MaxDegreeOfParallelism = ExtendedEnvironment.RestrictedProcessorCount });
                     filterObjectsBlock.Completion.ContinueWith(delegate { ingestBlock.Complete(); });
 
                     listObjectsBlock = new ActionBlock<string>(
-                        sourcePath => ListBlobs(sourcePath, m_args.Prefix, m_objectsCountQuota, filterObjectsBlock),
+                        sourcePath => ListFiles(sourcePath, m_args.Prefix, m_objectsCountQuota, filterObjectsBlock),
                         new ExecutionDataflowBlockOptions { MaxDegreeOfParallelism = 1 });
                     listObjectsBlock.Completion.ContinueWith(delegate { filterObjectsBlock.Complete(); });
                 }
-
                 // Debugging: Allow the debugger to retrieve the DataFlow blocks:
                 Kusto.Cloud.Platform.Debugging.RegisterWeakReference(nameof(ingestBlock), ingestBlock);
                 Kusto.Cloud.Platform.Debugging.RegisterWeakReference(nameof(filterObjectsBlock), filterObjectsBlock);
@@ -299,21 +319,19 @@ namespace LightIngest
 
                 currentPhaseStopwatch.Restart();
 
-                // Ingest and clean up
+                // Ingest
                 // Twist: if we have small enough number of batches, or command line argument set, we perform a synchronous parallel ingest
                 bool bIngestLocally = (bKustoRunningLocally && m_bFileSystem);
 
                 if (!bIngestLocally && (batches.SafeFastCount() <= c_BatchesLimitForSyncIngest || m_bDirectIngestUseSyncMode))
                 {
                     m_logger.LogVerbose($"==> Ingesting [{batches.SafeFastCount()}] batches synchronously...");
-                    RunSyncDirectIngestInBatchesAndCleanup(kustoClient, batches, m_ingestionProperties);
-                    m_logger.LogInfo($"==> Ingestion complete. Cleaning up...");
-                    DeleteStorageArtifacts(batches, deleteLocalFiles: false, deleteBlobs: m_bFileSystem);
-                    m_logger.LogInfo($"==> Cleanup complete.");
+                    RunSyncDirectIngestInBatches(kustoClient, batches, m_ingestionProperties);
+                    m_logger.LogInfo($"==> Ingestion complete.");
                 }
                 else
                 {
-                    RunDirectIngestInBatchesAndCleanup(kustoClient, batches, bIngestLocally);
+                    RunDirectIngestInBatches(kustoClient, batches, bIngestLocally);
                 }
 
                 currentPhaseStopwatch.Stop();
@@ -322,13 +340,13 @@ namespace LightIngest
                 var failedOperations = m_operationResults.Where(r => string.Equals(r.State, "Failed", StringComparison.OrdinalIgnoreCase));
                 if (failedOperations.SafeFastNone())
                 {
-                    m_logger.LogSuccess($"    RunDirectIngestInBatchesAndCleanup done. Time elapsed: {currentPhaseStopwatch.Elapsed:c}");
+                    m_logger.LogSuccess($"    RunDirectIngestInBatches done. Time elapsed: {currentPhaseStopwatch.Elapsed:c}");
                     m_logger.LogSuccess($"    RunDirectIngest completed without errors. Total time elapsed: {stopwatch.Elapsed:c}");
                     m_logger.LogSuccess($"    {DirectIngestStats()}");
                 }
                 else
                 {
-                    m_logger.LogWarning($"    RunDirectIngestInBatchesAndCleanup done. Time elapsed: {currentPhaseStopwatch.Elapsed:c}");
+                    m_logger.LogWarning($"    RunDirectIngestInBatches done. Time elapsed: {currentPhaseStopwatch.Elapsed:c}");
                     m_logger.LogWarning($"    RunDirectIngest completed with errors. Total time elapsed: {stopwatch.Elapsed:c}");
                     m_logger.LogWarning($"    {DirectIngestStats()}");
 
@@ -351,7 +369,7 @@ namespace LightIngest
             var stopwatch = ExtendedStopwatch.StartNew();
 
             ActionBlock<string> listObjectsBlock = null;
-            ActionBlock<Tuple<ICloudBlob, string>> filterObjectsBlock = null;
+            ActionBlock<IPersistentStorageFile> filterObjectsBlock = null;
             ActionBlock<DataSource> simulatedIngestBlock = null;
 
             if (m_bFileSystem) // Data is in local files
@@ -371,13 +389,13 @@ namespace LightIngest
                     record => LogSingleObject(record),
                     new ExecutionDataflowBlockOptions { MaxDegreeOfParallelism = ExtendedEnvironment.RestrictedProcessorCount });
 
-                filterObjectsBlock = new ActionBlock<Tuple<ICloudBlob, string>>(
-                    blobTuple => FilterBlobs(blobTuple, m_patternRegex, m_objectsCountQuota, simulatedIngestBlock),
+                filterObjectsBlock = new ActionBlock<IPersistentStorageFile>(
+                    file => FilterFiles(file, m_patternRegex, m_objectsCountQuota, simulatedIngestBlock),
                     new ExecutionDataflowBlockOptions { MaxDegreeOfParallelism = ExtendedEnvironment.RestrictedProcessorCount });
                 filterObjectsBlock.Completion.ContinueWith(delegate { simulatedIngestBlock.Complete(); });
 
                 listObjectsBlock = new ActionBlock<string>(
-                    sourcePath => ListBlobs(sourcePath, m_args.Prefix, m_objectsCountQuota, filterObjectsBlock),
+                    sourcePath => ListFiles(sourcePath, m_args.Prefix, m_objectsCountQuota, filterObjectsBlock),
                     new ExecutionDataflowBlockOptions { MaxDegreeOfParallelism = 1 });
                 listObjectsBlock.Completion.ContinueWith(delegate { filterObjectsBlock.Complete(); });
             }
@@ -403,11 +421,10 @@ namespace LightIngest
         private void RunPrepareBatchesForDirectIngest(ICslAdminProvider kustoClient, bool kustoRunningLocally)
         {
             ActionBlock<string> listObjectsBlock = null;
-            ActionBlock<Tuple<ICloudBlob, string>> filterObjectsBlock = null;
+            ActionBlock<IPersistentStorageFile> filterObjectsBlock = null;
             ActionBlock<DataSource> uploadOrAccumulateBlock = null;
 
-            CloudBlobContainer tempContainer = null;
-            string tempContainerSas = string.Empty;
+            IPersistentStorageContainer tempContainer = null;
 
             if (m_bFileSystem) // Data is in local files
             {
@@ -415,11 +432,10 @@ namespace LightIngest
                 if (!kustoRunningLocally)
                 {
                     tempContainer = AcquireTempBlobContainer(kustoClient);
-                    tempContainerSas = tempContainer.ServiceClient.Credentials.SASToken;
                 }
 
                 uploadOrAccumulateBlock = new ActionBlock<DataSource>(
-                    record => UploadFiles(record, tempContainer, tempContainerSas),
+                    record => UploadFiles(record, tempContainer),
                     new ExecutionDataflowBlockOptions { MaxDegreeOfParallelism = ExtendedEnvironment.RestrictedProcessorCount });
 
                 listObjectsBlock = new ActionBlock<string>(
@@ -427,19 +443,19 @@ namespace LightIngest
                     new ExecutionDataflowBlockOptions { MaxDegreeOfParallelism = 1 });
                 listObjectsBlock.Completion.ContinueWith(delegate { uploadOrAccumulateBlock.Complete(); });
             }
-            else // Input is in blobs
+            else // Input is not local files
             {
                 uploadOrAccumulateBlock = new ActionBlock<DataSource>(
                     record => AccumulateObjects(record),
                     new ExecutionDataflowBlockOptions { MaxDegreeOfParallelism = ExtendedEnvironment.RestrictedProcessorCount });
 
-                filterObjectsBlock = new ActionBlock<Tuple<ICloudBlob, string>>(
-                    blobTuple => FilterBlobs(blobTuple, m_patternRegex, m_objectsCountQuota, uploadOrAccumulateBlock),
+                filterObjectsBlock = new ActionBlock<IPersistentStorageFile>(
+                    file => FilterFiles(file, m_patternRegex, m_objectsCountQuota, uploadOrAccumulateBlock),
                     new ExecutionDataflowBlockOptions { MaxDegreeOfParallelism = ExtendedEnvironment.RestrictedProcessorCount });
                 filterObjectsBlock.Completion.ContinueWith(delegate { uploadOrAccumulateBlock.Complete(); });
 
                 listObjectsBlock = new ActionBlock<string>(
-                    sourcePath => ListBlobs(sourcePath, m_args.Prefix, m_objectsCountQuota, filterObjectsBlock),
+                    sourcePath => ListFiles(sourcePath, m_args.Prefix, m_objectsCountQuota, filterObjectsBlock),
                     new ExecutionDataflowBlockOptions { MaxDegreeOfParallelism = 1 });
                 listObjectsBlock.Completion.ContinueWith(delegate { filterObjectsBlock.Complete(); });
             }
@@ -462,35 +478,28 @@ namespace LightIngest
             m_logger.LogVerbose("==> Flow RunPrepareBatchesForDirectIngest done.");
         }
 
-        private void RunDirectIngestInBatchesAndCleanup(ICslAdminProvider kustoClient, IEnumerable<DataSourcesBatch> batches, bool ingestLocally)
+        private void RunDirectIngestInBatches(ICslAdminProvider kustoClient, IEnumerable<DataSourcesBatch> batches, bool ingestLocally)
         {
-            ActionBlock<DataSourcesBatch> batchesCleanupBlock = new ActionBlock<DataSourcesBatch>(
-                batch => DeleteStorageArtifacts(batch, deleteLocalFiles: false, deleteBlobs: m_bFileSystem),
-                new ExecutionDataflowBlockOptions { MaxDegreeOfParallelism = ExtendedEnvironment.RestrictedProcessorCount });
-
             ActionBlock<DataSourcesBatch> ingestBatchesBlock = new ActionBlock<DataSourcesBatch>(
-                batch => IngestBatch(batch, kustoClient, ingestLocally, m_ingestionProperties, m_ingestCompletionTimeout, batchesCleanupBlock),
+                batch => IngestBatch(batch, kustoClient, ingestLocally, m_ingestionProperties, m_ingestCompletionTimeout),
                 new ExecutionDataflowBlockOptions { MaxDegreeOfParallelism = m_directIngestParallelRequests });
-            ingestBatchesBlock.Completion.ContinueWith(delegate { batchesCleanupBlock.Complete(); });
 
             // Debugging: Allow the debugger to retrieve the DataFlow blocks:
-            Kusto.Cloud.Platform.Debugging.RegisterWeakReference(nameof(batchesCleanupBlock), batchesCleanupBlock);
             Kusto.Cloud.Platform.Debugging.RegisterWeakReference(nameof(ingestBatchesBlock), ingestBatchesBlock);
 
-            m_logger.LogVerbose("==> Flow RunDirectIngestInBatchesAndCleanup starting...");
+            m_logger.LogVerbose("==> Flow RunDirectIngestInBatches starting...");
             batches.ForEach(ds => ingestBatchesBlock.Post(ds));
-            ingestBatchesBlock.Complete();
 
             bool bPipelineCompleted = false;
             do
             {
-                bPipelineCompleted = batchesCleanupBlock.Completion.Wait(TimeSpan.FromSeconds(10));
+                bPipelineCompleted = ingestBatchesBlock.Completion.Wait(TimeSpan.FromSeconds(10));
                 m_logger.LogInfo($"==> {DirectIngestStats()}");
             } while (!bPipelineCompleted);
-            m_logger.LogVerbose("==> Flow RunDirectIngestInBatchesAndCleanup done.");
+            m_logger.LogVerbose("==> Flow RunDirectIngestInBatches done.");
         }
 
-        private void RunSyncDirectIngestInBatchesAndCleanup(ICslAdminProvider kustoClient,
+        private void RunSyncDirectIngestInBatches(ICslAdminProvider kustoClient,
                                                             IEnumerable<DataSourcesBatch> batches,
                                                             KustoQueuedIngestionProperties ingestionProperties)
         {
@@ -516,7 +525,7 @@ namespace LightIngest
                 }
                 catch (Exception ex)
                 {
-                    m_logger.LogError($"Error in RunSyncDirectIngestInBatchesAndCleanup: {ex.Message}");
+                    m_logger.LogError($"Error in RunSyncDirectIngestInBatches: {ex.Message}");
                 }
             });
 
@@ -562,7 +571,7 @@ namespace LightIngest
                         SizeInBytes = fileSize,
                         CreationTimeUtc = fileCreationTime
                     });
-        
+
                     Interlocked.Increment(ref m_objectsAccepted);
                 });
             }
@@ -572,90 +581,70 @@ namespace LightIngest
             }
         }
 
-        private void ListBlobs(string sourcePath, string sourceVirtualDirectory,
-                               int blobsToTake, ITargetBlock<Tuple<ICloudBlob, string>> targetBlock)
+        private void ListFiles(string sourcePath, string sourceVirtualDirectory,
+                               int filesToTake, ITargetBlock<IPersistentStorageFile> targetBlock)
         {
             try
             {
-                CloudBlobContainer blobContainer = CloudResourceUriParser.TryCreateCloudBlobContainer(sourcePath, out var errorMessage, keyOrSasMandatory: false);
-                if (blobContainer == null)
+                IPersistentStorageContainer container = m_persistentStorageFactory.CreateContainerRef(sourcePath);
+
+                m_logger.LogVerbose($"ListFiles: enumerating files under container '{sourcePath.SplitFirst(";").SplitFirst("?")}' with prefix '{sourceVirtualDirectory}'");
+
+                if (filesToTake >= 0 && filesToTake <= Interlocked.Read(ref m_objectsAccepted))
                 {
-                    m_logger.LogWarning($"ListBlobs: failed to resolve the blob container from '{sourcePath}': '{errorMessage}'");
                     return;
                 }
 
-                string key =
-                    (blobContainer.ServiceClient.Credentials.IsSAS ?
-                    blobContainer.ServiceClient.Credentials.SASToken : $";{blobContainer.ServiceClient.Credentials.ExportBase64EncodedKey()}");
-                m_logger.LogVerbose($"ListBlobs: enumerating blobs under container '{blobContainer.Uri}' with prefix '{sourceVirtualDirectory}'");
+                var sourceFiles = container.EnumerateFiles(
+                    pattern: sourceVirtualDirectory + "*"
+                );
 
-                BlobContinuationToken token = null;
-                BlobResultSegment segmentResults = null;
-                do
+                ExtendedParallel.ForEach(sourceFiles, m_directIngestParallelRequests, r =>
                 {
-                    if (blobsToTake >= 0 && blobsToTake <= Interlocked.Read(ref m_objectsAccepted))
-                    {
-                        break;
-                    }
+                    targetBlock.SendAsync(r);
+                    Interlocked.Increment(ref m_objectsListed);
+                });
 
-                    segmentResults = blobContainer.ListBlobsSegmentedAsync(
-                        prefix: sourceVirtualDirectory,
-                        useFlatBlobListing: true,
-                        blobListingDetails: BlobListingDetails.Metadata,
-                        maxResults: c_BlobListingSegmentSize,
-                        currentToken: token,
-                        options: null,
-                        operationContext: null).ResultEx();
-
-                    m_logger.LogVerbose($"ListBlobs: listed {segmentResults.Results.SafeFastCount()} blobs");
-                    segmentResults.Results.ForEach((r) =>
-                    {
-                        targetBlock.SendAsync(new Tuple<ICloudBlob, string>(r as ICloudBlob, key));
-                        Interlocked.Increment(ref m_objectsListed);
-                    });
-                    token = segmentResults.ContinuationToken;
-
-                } while (token != null);
             }
             catch (Exception ex)
             {
-                m_logger.LogError($"Error: ListBlobs failed: {ex.MessageEx()}");
+                m_logger.LogError($"Error: ListFiles failed: {ex.MessageEx()}");
             }
         }
 
-        private void FilterBlobs(Tuple<ICloudBlob, string> blobTuple, Regex patternRegex, int blobsToTake, ITargetBlock<DataSource> targetBlock)
+        private void FilterFiles(IPersistentStorageFile cloudFile, Regex patternRegex, int filesToTake, ITargetBlock<DataSource> targetBlock)
         {
             try
             {
-                ICloudBlob cloudBlob = blobTuple.Item1;
-                if (cloudBlob != null && (patternRegex == null || patternRegex.IsMatch(cloudBlob.Name)))
+                if (cloudFile != null && (patternRegex == null || patternRegex.IsMatch(cloudFile.GetFileName())))
                 {
                     // we are taking this lock here in order to not process more items than specified.
                     lock (m_objectsListingLock)
                     {
-                        if (blobsToTake >= 0 && blobsToTake <= Interlocked.Read(ref m_objectsAccepted))
+                        if (filesToTake >= 0 && filesToTake <= Interlocked.Read(ref m_objectsAccepted))
                         {
                             // we're done, don't need new stuff
                             return;
                         }
 
-                        long blobSize = Utilities.EstimateBlobSize(cloudBlob, m_estimatedCompressionRatio);
-                        DateTime? blobCreationTime = Utilities.InferBlobCreationTimeUtc(cloudBlob, m_creationTimeInNamePattern);
+                        long size = Utilities.EstimateFileSize(cloudFile, m_estimatedCompressionRatio);
+                        DateTime? creationTime = Utilities.InferFileCreationTimeUtc(cloudFile, m_creationTimeInNamePattern);
 
                         targetBlock.SendAsync(new DataSource
                         {
-                            CloudFileUri = $"{cloudBlob.Uri.AbsoluteUri}{blobTuple.Item2}",
-                            SafeCloudFileUri = cloudBlob.Uri.AbsoluteUri,
-                            SizeInBytes = blobSize,
-                            CreationTimeUtc = blobCreationTime
+                            CloudFileUri = $"{cloudFile.GetUnsecureUri()}",
+                            SafeCloudFileUri = cloudFile.GetFileUri(),
+                            SizeInBytes = size,
+                            CreationTimeUtc = creationTime
                         });
+
                         Interlocked.Increment(ref m_objectsAccepted);
                     }
                 }
             }
             catch (Exception ex)
             {
-                m_logger.LogError($"FilterBlobs failed: {ex.Message}");
+                m_logger.LogError($"FilterFiles failed: {ex.Message}");
             }
         }
 
@@ -687,8 +676,9 @@ namespace LightIngest
                     ingestionProperties = baseIngestionProperties;
                 }
 
-                while (!await m_fixedWindowThrottlerPolicy.ShouldInvokeAsync().ConfigureAwait(false)) {
-                    await Task.Delay(TimeSpan.FromMilliseconds(50)).ConfigureAwait(false) ;
+                while (!await m_fixedWindowThrottlerPolicy.ShouldInvokeAsync().ConfigureAwait(false))
+                {
+                    await Task.Delay(TimeSpan.FromMilliseconds(50)).ConfigureAwait(false);
                 }
 
                 var result = await ingestClient.IngestFromStorageAsync(
@@ -727,9 +717,9 @@ namespace LightIngest
         }
 
 
-        private CloudBlobContainer AcquireTempBlobContainer(ICslAdminProvider kustoClient)
+        private IPersistentStorageContainer AcquireTempBlobContainer(ICslAdminProvider kustoClient)
         {
-            CloudBlobContainer blobContainerWithSas = null;
+            IPersistentStorageContainer blobContainerRef = null;
             try
             {
                 var cmd = CslCommandGenerator.GenerateCreateTempStorageCommand();
@@ -740,8 +730,7 @@ namespace LightIngest
                     var uriWithSas = reader.First().StorageRoot;
                     if (!string.IsNullOrWhiteSpace(uriWithSas))
                     {
-                        blobContainerWithSas = new CloudBlobContainer(new Uri(uriWithSas));
-                        blobContainerWithSas.EnsureValid();
+                        blobContainerRef = m_blob.CreateContainerRef(uriWithSas);
                     }
                 }
             }
@@ -749,20 +738,20 @@ namespace LightIngest
             {
                 m_logger.LogError($"AcquireTempBlobContainer failed: {ex.Message}");
             }
-            return blobContainerWithSas;
+            return blobContainerRef;
         }
 
-        private void UploadFiles(DataSource fileRef, CloudBlobContainer blobContainer, string containerSas)
+        private void UploadFiles(DataSource fileRef, IPersistentStorageContainer blobContainer)
         {
             try
             {
                 if (blobContainer != null)
                 {
                     var blobName = Path.GetFileName(ExtendedPath.RandomizeFileName(fileRef.FileSystemPath));
-                    var blobReference = blobContainer.GetBlockBlobReference(blobName);
-                    blobReference.UploadFromFileEx(fileRef.FileSystemPath);
-                    fileRef.CloudFileUri = $"{blobReference.Uri}{containerSas}";
-                    fileRef.SafeCloudFileUri = blobReference.Uri.ToString();
+                    var blobReference = blobContainer.CreateFileRef(blobName);
+                    blobReference.UploadFromFileAsync(fileRef.FileSystemPath).WaitEx();
+                    fileRef.CloudFileUri = blobReference.GetUnsecureUri();
+                    fileRef.SafeCloudFileUri = blobReference.GetFileUri();
                 }
 
                 lock (m_listIntermediateSourcesLock)
@@ -797,8 +786,7 @@ namespace LightIngest
                                  ICslAdminProvider kustoClient,
                                  bool bIngestLocally,
                                  KustoIngestionProperties baseIngestionProperties,
-                                 TimeSpan ingestOperationTimeout,
-                                 ITargetBlock<DataSourcesBatch> targetBlock)
+                                 TimeSpan ingestOperationTimeout)
         {
             try
             {
@@ -835,65 +823,12 @@ namespace LightIngest
                     m_operationResults.Add(operationResults);
                 }
                 Interlocked.Increment(ref m_batchesIngested);
-
-                // post to next block
-                targetBlock.SendAsync(batch);
             }
             catch (Exception ex)
             {
                 m_logger.LogError($"IngestBatch failed: {ex.Message}");
             }
         }
-
-        private void DeleteStorageArtifacts(IEnumerable<DataSourcesBatch> batches, bool deleteLocalFiles, bool deleteBlobs)
-        {
-            // Fast passd
-            if (!deleteLocalFiles && !deleteBlobs)
-            {
-                Interlocked.Add(ref m_batchesCleanedUp, batches.SafeFastCount());
-                return;
-            }
-
-            ExtendedParallel.ForEach(batches, 16, (b) =>
-            {
-                DeleteStorageArtifacts(b, deleteLocalFiles, deleteBlobs);
-            });
-        }
-
-        private void DeleteStorageArtifacts(DataSourcesBatch batch, bool deleteLocalFiles, bool deleteBlobs)
-        {
-            List<string> localFilesToDelete = new List<string>();
-            List<string> blobsToDelete = new List<string>();
-
-            try
-            {
-                localFilesToDelete.AddRange(batch.Sources.Where(s => !string.IsNullOrWhiteSpace(s.FileSystemPath)).Select((s) => s.FileSystemPath));
-                blobsToDelete.AddRange(batch.Sources.Where(s => !string.IsNullOrWhiteSpace(s.CloudFileUri)).Select((s) => s.CloudFileUri));
-
-                if (deleteLocalFiles && localFilesToDelete.SafeFastAny())
-                {
-                    Parallel.ForEach(localFilesToDelete, new ParallelOptions() { MaxDegreeOfParallelism = 16 }, (f) =>
-                    {
-                        Utilities.TryDeleteFile(f);
-                    });
-                }
-
-                if (deleteBlobs && blobsToDelete.SafeFastAny())
-                {
-                    Parallel.ForEach(blobsToDelete, new ParallelOptions() { MaxDegreeOfParallelism = 16 }, (b) =>
-                    {
-                        Utilities.TryDeleteBlob(b);
-                    });
-                }
-
-                Interlocked.Increment(ref m_batchesCleanedUp);
-            }
-            catch (Exception ex)
-            {
-                m_logger.LogError($"DeleteStorageArtifacts failed: {ex.Message}");
-            }
-        }
-
         private static IEnumerable<DataSourcesBatch> SplitIntoBatches(IEnumerable<DataSource> objects,
                                                                       bool localFiles,
                                                                       long batchSizeLimitInBytes,
@@ -1089,7 +1024,7 @@ namespace LightIngest
             {
                 get
                 {
-                    return $"[{ Sources.Count} objects, {TotalSizeBytes:#,##0}]";
+                    return $"[{Sources.Count} objects, {TotalSizeBytes:#,##0}]";
                 }
             }
         }
