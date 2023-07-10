@@ -326,7 +326,7 @@ namespace LightIngest
                 toolAssembly: typeof(Program).Assembly,
                 commandLineDevTracingValue: m_args.DevTracing);
 
-            m_logger = new LoggerTracer(PrivateTracer.Tracer);
+            m_logger = new LoggerTracer(SharedTracer.Tracer);
             m_logger.LogVerbose($"LightIngest invoked with the following arguments: {args.SafeFastStringJoin(" ")}");
         }
 
@@ -778,7 +778,7 @@ namespace LightIngest
     #endregion
 
     #region class PrivateTracer
-    internal class PrivateTracer : TraceSourceBase<PrivateTracer>
+    internal class SharedTracer : TraceSourceBase<SharedTracer>
     {
         /// <summary>
         /// The string that identifies this trace source

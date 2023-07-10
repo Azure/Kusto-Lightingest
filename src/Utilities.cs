@@ -178,7 +178,7 @@ namespace LightIngest
         {
             if (File.Exists(path))
             {
-                ExceptionFilters.RunTraceSwallow(() => { File.Delete(path); }, $"TryDeleteFile: failed to delete file '{path}'", PrivateTracer.Tracer);
+                ExceptionFilters.RunTraceSwallow(() => { File.Delete(path); }, $"TryDeleteFile: failed to delete file '{path}'", SharedTracer.Tracer);
             }
         }
 
