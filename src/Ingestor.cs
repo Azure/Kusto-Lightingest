@@ -157,12 +157,12 @@ namespace LightIngest
         {
             m_disposer = new Disposer(GetType().FullName, "LightIngest");
             var serviceLocator = new ServiceLocator();
-            var calloutValidatorFactory = new AllowAllServiceCalloutValidatorFactory();
+            var hostnameValidatorFactory = new VoidServiceCalloutHostnameValidatorFactory();
             var persistentStorageManager = KustoPersistentStorageManager.CreateAndRegister(
-                "LightIngest", serviceLocator, calloutValidatorFactory, featureFlags: null, registerOnelakeFactory: false);
+                "LightIngest", serviceLocator, hostnameValidatorFactory, featureFlags: null, registerOnelakeFactory: false);
             m_persistentStorageFactory = persistentStorageManager.Factory;
-            var azureStorageValidator = calloutValidatorFactory.GetValidator("AzureStorage");
-            m_blob = new BlobPersistentStorageFactory2(azureStorageValidator);
+            var azureStorageHostnameValidator = hostnameValidatorFactory.GetServiceCalloutHostnameValidator("AzureStorage");
+            m_blob = new BlobPersistentStorageFactory2(azureStorageHostnameValidator);
             m_disposer.Add(persistentStorageManager);
         }
 
