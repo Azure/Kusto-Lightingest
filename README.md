@@ -2,6 +2,11 @@
 
 LightIngest is a command-line utility for ad-hoc data ingestion into Azure Data Explorer. The utility can pull source data from a local folder or from a storage container. LightIngest is most useful when you want to ingest a large amount of data, because there is no time constraint on ingestion duration. It's also useful when you want to later query records according to the time they were created, and not the time they were ingested.
 
+## Usage
+
+Binaries are found under each release in the [release section](https://github.com/Azure/Kusto-Lightingest/releases) as stand-alone binaries runtime specific ready to use.
+Windows example: LightIngest.exe "https://ingest-{Cluster name and region}.kusto.windows.net;Fed=True" -db:{Database} -table:{table} -source:"https://{Account}.blob.core.windows.net/{ROOT_CONTAINER};{StorageAccountKey}" -creationTimePattern:"'historicalvalues'yyyyMMdd'.parquet'" -pattern:"*.parquet" -format:parquet -limit:2 -cr:10.0
+
 ## Documentation
 
 See the full documentation [here](https://learn.microsoft.com/en-us/azure/data-explorer/lightingest)
