@@ -13,7 +13,6 @@
     <ProjectReference Include="..\..\Common\Kusto.Cloud.Platform.Adl\Kusto.Cloud.Platform.Adl.csproj" />
     <ProjectReference Include="..\..\Common\Kusto.Cloud.Platform.AWS\Kusto.Cloud.Platform.AWS.csproj" />
     <ProjectReference Include="..\..\Common\Kusto.Cloud.Platform.Azure.Storage\Kusto.Cloud.Platform.Azure.Storage.csproj" />
-    <ProjectReference Include="..\..\Common\Kusto.Cloud.Platform.Azure\Kusto.Cloud.Platform.Azure.csproj" />
     <ProjectReference Include="..\..\Common\Kusto.Cloud.Platform\Kusto.Cloud.Platform.csproj" />
     <ProjectReference Include="..\..\Common\Kusto.Common.Svc\Kusto.Common.Svc.csproj" />
   </ItemGroup>
