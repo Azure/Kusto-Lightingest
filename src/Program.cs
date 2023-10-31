@@ -32,9 +32,15 @@ namespace LightIngest
 
         [CommandLineArg(
             "managedIdentity",
-            "Name of the managed identity (user-assigned or system-assigned) to be used for authentication. Use \"system\" for system-assigned identity.",
+            "Client Id of the managed identity (user-assigned or system-assigned) to be used for connecting to Kusto. Use \"system\" for system-assigned identity.",
             ShortName = "mi", Mandatory = false)]
-        public string ManagedIdentity = null;
+        public string ConnectWithManagedIdentity = null;
+
+        [CommandLineArg(
+            "ingestWithManagedIdentity",
+            "Client id of the managed identity (user-assigned or system-assigned) to be used by Kusto to download the data. Use \"system\" for system-assigned identity.",
+            ShortName = "ingestmi", Mandatory = false)]
+        public string IngestWithManagedIdentity = null;
 
         [CommandLineArg(
             "database",
@@ -58,6 +64,23 @@ namespace LightIngest
             "For the complete list see: \"https://learn.microsoft.com/en-us/azure/data-explorer/kusto/api/connection-strings/storage-connection-strings#storage-connection-string-templates\"",
             ShortName = "source", Mandatory = true)]
         public string SourcePath = null;
+
+        [CommandLineArg(
+            "ConnectToStorageWithUserAuth",
+            "Optionally authenticate to the data source storage service with user credentials.\r\n" +
+            "Options: 'PROMPT', 'DEVICE_CODE'\r\n" +
+            "Default: Off",
+            ShortName = "storageUserAuth",
+            Mandatory = false)]
+        public string ConnectToStorageWithUserAuth = "";
+
+        [CommandLineArg(
+            "ConnectToStorageLoginUri",
+            "If ConnectToStorageWithUserAuth is 'PROMPT' or 'DEVICE_CODE', optionally provide the AAD login Uri.\r\n" +
+            "Default: Public Azure Cloud login Uri",
+            ShortName = "storageLoginUri",
+            Mandatory = false)]
+        public string ConnectToStorageLoginUri = "";
 
         [CommandLineArg(
             "pattern",
@@ -216,45 +239,46 @@ namespace LightIngest
             var esb = new ExtendedStringBuilder();
             esb.Indent();
 
-            esb.AppendLine($"Connection string      : {ConnectionString}");
-            if (!string.IsNullOrWhiteSpace(ManagedIdentity))
-            {
-                esb.AppendLine($"-managedIdentity       : {ManagedIdentity}");
-            }
+            esb.AppendLine($"Connection string          : {ConnectionString}");
+            if (!string.IsNullOrWhiteSpace(ConnectWithManagedIdentity)) { esb.AppendLine($"-managedIdentity           : {ConnectWithManagedIdentity}"); }
+            if (!string.IsNullOrWhiteSpace(IngestWithManagedIdentity)) { esb.AppendLine($"-ingestWithManagedIdentity : {IngestWithManagedIdentity}"); }
 
-            esb.AppendLine($"-database              : {DatabaseName}");
-            esb.AppendLine($"-table                 : {TableName}");
+            esb.AppendLine($"-database                  : {DatabaseName}");
+            esb.AppendLine($"-table                     : {TableName}");
             esb.AppendLine();
 
-            esb.AppendLine($"-sourcePath            : {SourcePath}");
-            if (!string.IsNullOrWhiteSpace(Prefix)) { esb.AppendLine($"-prefix                : {Prefix}"); }
-            esb.AppendLine($"-pattern               : {Pattern}");
-            esb.AppendLine($"-creationTimePattern   : {CreationTimePattern}");
-            esb.AppendLine($"-format                : {Format}");
-            if (!string.IsNullOrWhiteSpace(ZipPattern)) { esb.AppendLine($"-zipPattern            : {ZipPattern}"); }
-            esb.AppendLine($"-ignoreFirstRow        : {IgnoreFirstRecord}");
-            if (!string.IsNullOrWhiteSpace(IngestionMappingPath)) { esb.AppendLine($"-ingestionMappingPath  : {IngestionMappingPath}"); }
-            if (!string.IsNullOrWhiteSpace(IngestionMappingName)) { esb.AppendLine($"-ingestionMappingRef   : {IngestionMappingName}"); }
-            if (Tags.SafeFastAny()) { esb.AppendLine($"-tags                  : [{Tags.SafeFastStringJoin(", ")}]"); }
+            esb.AppendLine($"-sourcePath                : {SourcePath}");
+            if (!string.IsNullOrWhiteSpace(ConnectToStorageWithUserAuth)) { esb.AppendLine($"-ConnectToStorageWithUserAuth : {ConnectToStorageWithUserAuth}"); }
+            if (!string.IsNullOrWhiteSpace(ConnectToStorageLoginUri)) { esb.AppendLine($"-ConnectToStorageLoginUri : {ConnectToStorageLoginUri}"); }
+
+            if (!string.IsNullOrWhiteSpace(Prefix)) { esb.AppendLine($"-prefix                    : {Prefix}"); }
+            esb.AppendLine($"-pattern                   : {Pattern}");
+            esb.AppendLine($"-creationTimePattern       : {CreationTimePattern}");
+            esb.AppendLine($"-format                    : {Format}");
+            if (!string.IsNullOrWhiteSpace(ZipPattern)) { esb.AppendLine($"-zipPattern                : {ZipPattern}"); }
+            esb.AppendLine($"-ignoreFirstRow            : {IgnoreFirstRecord}");
+            if (!string.IsNullOrWhiteSpace(IngestionMappingPath)) { esb.AppendLine($"-ingestionMappingPath      : {IngestionMappingPath}"); }
+            if (!string.IsNullOrWhiteSpace(IngestionMappingName)) { esb.AppendLine($"-ingestionMappingRef       : {IngestionMappingName}"); }
+            if (Tags.SafeFastAny()) { esb.AppendLine($"-tags                      : [{Tags.SafeFastStringJoin(", ")}]"); }
             esb.AppendLine();
 
-            esb.AppendLine($"-compression           : {EstimatedCompressionRatio}");
-            esb.AppendLine($"-ingestTimeout (min)   : {IngestTimeoutInMinutes}");
-            esb.AppendLine($"-noSizeLimit           : {NoSizeLimit}");
-            if (Limit >= 0) { esb.AppendLine($"-limit                 : {Limit}"); }
-            if (ListOnly)   { esb.AppendLine($"-listOnly              : {ListOnly}"); }
-            esb.AppendLine($"-dontWait              : {DontWait}");
+            esb.AppendLine($"-compression               : {EstimatedCompressionRatio}");
+            esb.AppendLine($"-ingestTimeout (min)       : {IngestTimeoutInMinutes}");
+            esb.AppendLine($"-noSizeLimit               : {NoSizeLimit}");
+            if (Limit >= 0) { esb.AppendLine($"-limit                     : {Limit}"); }
+            if (ListOnly)   { esb.AppendLine($"-listOnly                  : {ListOnly}"); }
+            esb.AppendLine($"-dontWait                  : {DontWait}");
             esb.AppendLine();
 
-            if (ForceSync.HasValue) { esb.AppendLine($"-forceSync             : {ForceSync.Value}"); }
-            if (BatchSizeInMBs.HasValue) { esb.AppendLine($"-dataBatchSize (MB)    : {BatchSizeInMBs.Value}"); }
-            if (FilesInBatch.HasValue) { esb.AppendLine($"-filesInBatch          : {FilesInBatch.Value}"); }
-            if (ParallelRequests.HasValue) { esb.AppendLine($"-parallelRequests      : {ParallelRequests.Value}"); }
-            if (RepeatPauseInSeconds >= 0) { esb.AppendLine($"-repeatPause (sec)     : {RepeatPauseInSeconds}"); }
-            if (RepeatCount > 0) { esb.AppendLine($"-repeatCount           : {RepeatCount}"); }
-            if (!string.Equals(DevTracing, "*")) { esb.AppendLine($"-trace                 : {DevTracing}"); }
-            esb.AppendLine($"-ingestionRateCount    : {IngestionRateCount}");
-            esb.AppendLine($"-ingestionRateTime     : {IngestionRateTime}");
+            if (ForceSync.HasValue) { esb.AppendLine($"-forceSync                 : {ForceSync.Value}"); }
+            if (BatchSizeInMBs.HasValue) { esb.AppendLine($"-dataBatchSize (MB)        : {BatchSizeInMBs.Value}"); }
+            if (FilesInBatch.HasValue) { esb.AppendLine($"-filesInBatch              : {FilesInBatch.Value}"); }
+            if (ParallelRequests.HasValue) { esb.AppendLine($"-parallelRequests          : {ParallelRequests.Value}"); }
+            if (RepeatPauseInSeconds >= 0) { esb.AppendLine($"-repeatPause (sec)         : {RepeatPauseInSeconds}"); }
+            if (RepeatCount > 0) { esb.AppendLine($"-repeatCount               : {RepeatCount}"); }
+            if (!string.Equals(DevTracing, "*")) { esb.AppendLine($"-trace                     : {DevTracing}"); }
+            esb.AppendLine($"-ingestionRateCount        : {IngestionRateCount}");
+            esb.AppendLine($"-ingestionRateTime         : {IngestionRateTime}");
             
             esb.Unindent();
             return esb.ToString();
@@ -473,11 +497,11 @@ namespace LightIngest
             }
 
             // Add a touch for managed identities:
-            if (!string.IsNullOrWhiteSpace(m_args.ManagedIdentity))
+            if (!string.IsNullOrWhiteSpace(m_args.ConnectWithManagedIdentity))
             {
                 if (kcsb.FederatedSecurity || kcsb.DstsFederatedSecurity)
                 {
-                    kcsb.EmbeddedManagedIdentity = m_args.ManagedIdentity;
+                    kcsb.EmbeddedManagedIdentity = m_args.ConnectWithManagedIdentity;
                 }
                 else
                 {
@@ -738,6 +762,12 @@ namespace LightIngest
             {
                 // Check permissions on target table
                 CheckPermissionsOnTable();
+#if OPEN_SOURCE_COMPILATION
+                if (!string.Equals(m_targetServiceType, KustoIngestionConstants.DmClusterServiceType, StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new Exception("Support only Ingest service target type in open source compilation. Add '-ingest' to the url host.");
+                }
+#endif
 
                 if (string.Equals(m_targetServiceType, KustoIngestionConstants.DmClusterServiceType, StringComparison.OrdinalIgnoreCase))
                 {
@@ -775,7 +805,7 @@ namespace LightIngest
         }
     }
 
-    #endregion
+#endregion
 
     #region class PrivateTracer
     internal class SharedTracer : TraceSourceBase<SharedTracer>

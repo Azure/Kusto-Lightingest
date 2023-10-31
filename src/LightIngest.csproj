@@ -1,19 +1,34 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
-  <PropertyGroup>
-    <OutputType>Exe</OutputType>
-    <OutputPath>$(KustoDir)\$(Bin)\$(Configuration)\Kustools\</OutputPath>
-  </PropertyGroup>
-  <ItemGroup Condition="'$(TARGETING_NETCORE)' == 'false'">
-    <Reference Include="System.IO.Compression" />
-    <Reference Include="Microsoft.CSharp" />
-  </ItemGroup>
-  <ItemGroup>
-    <ProjectReference Include="..\..\Client\Kusto.Data\Kusto.Data.csproj" />
-    <ProjectReference Include="..\..\Client\Kusto.Ingest\Kusto.Ingest.csproj" />
-    <ProjectReference Include="..\..\Common\Kusto.Cloud.Platform.Adl\Kusto.Cloud.Platform.Adl.csproj" />
-    <ProjectReference Include="..\..\Common\Kusto.Cloud.Platform.AWS\Kusto.Cloud.Platform.AWS.csproj" />
-    <ProjectReference Include="..\..\Common\Kusto.Cloud.Platform.Azure.Storage\Kusto.Cloud.Platform.Azure.Storage.csproj" />
-    <ProjectReference Include="..\..\Common\Kusto.Cloud.Platform\Kusto.Cloud.Platform.csproj" />
-    <ProjectReference Include="..\..\Common\Kusto.Common.Svc\Kusto.Common.Svc.csproj" />
-  </ItemGroup>
+    <PropertyGroup>
+        <KustoProps Condition="Exists('..\..\Directory.Build.props')">true</KustoProps>
+        <OutputType>Exe</OutputType>
+    </PropertyGroup>
+    
+    <PropertyGroup Condition=" '$(KustoProps)' == 'true'">
+        <OutputPath>$(KustoDir)\$(Bin)\$(Configuration)\Kustools\</OutputPath>
+    </PropertyGroup>
+    <PropertyGroup Condition=" '$(KustoProps)' != 'true'">
+        <TargetFramework>net6.0</TargetFramework>
+        <TARGETING_NETCORE>true</TARGETING_NETCORE>
+        <DefineConstants>$(DefineConstants);OPEN_SOURCE_COMPILATION</DefineConstants>
+    </PropertyGroup>
+
+    <ItemGroup Condition="'$(TARGETING_NETCORE)' == 'false'">
+        <Reference Include="System.IO.Compression" />
+        <Reference Include="Microsoft.CSharp" />
+    </ItemGroup>
+
+    <ItemGroup Condition=" '$(KustoProps)' == 'true'">
+        <ProjectReference Include="..\..\Client\Kusto.Data\Kusto.Data.csproj" />
+        <ProjectReference Include="..\..\Client\Kusto.Ingest\Kusto.Ingest.csproj" />
+        <ProjectReference Include="..\..\Common\Kusto.Cloud.Platform.Adl\Kusto.Cloud.Platform.Adl.csproj" />
+        <ProjectReference Include="..\..\Common\Kusto.Cloud.Platform.AWS\Kusto.Cloud.Platform.AWS.csproj" />
+        <ProjectReference Include="..\..\Common\Kusto.Cloud.Platform.Azure.Storage\Kusto.Cloud.Platform.Azure.Storage.csproj" />
+        <ProjectReference Include="..\..\Common\Kusto.Cloud.Platform\Kusto.Cloud.Platform.csproj" />
+        <ProjectReference Include="..\..\Common\Kusto.Common.Svc\Kusto.Common.Svc.csproj" />
+    </ItemGroup>
+    <ItemGroup Condition=" '$(KustoProps)' != 'true'">
+        <PackageReference Include="Microsoft.Azure.Kusto.Cloud.Platform" Version="*" />
+        <PackageReference Include="Microsoft.Azure.Kusto.Ingest" Version="*" />
+    </ItemGroup>
 </Project>

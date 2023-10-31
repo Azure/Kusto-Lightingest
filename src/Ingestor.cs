@@ -11,9 +11,12 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Threading.Tasks.Dataflow;
 
+#if !OPEN_SOURCE_COMPILATION
 using Kusto.Cloud.Platform.Azure.Storage.PersistentStorage;
+#endif
 using Kusto.Cloud.Platform.Data;
 using Kusto.Cloud.Platform.Modularization;
+using Kusto.Cloud.Platform.Msal;
 using Kusto.Cloud.Platform.Security;
 using Kusto.Cloud.Platform.Storage.PersistentStorage;
 using Kusto.Cloud.Platform.Utils;
@@ -21,7 +24,10 @@ using Kusto.Data;
 using Kusto.Data.Common;
 using Kusto.Data.Net.Client;
 using Kusto.Ingest;
+#if !OPEN_SOURCE_COMPILATION
 using Kusto.Common.Svc.Storage;
+#endif
+
 
 namespace LightIngest
 {
@@ -32,10 +38,13 @@ namespace LightIngest
         private const int c_DefaultDirectIngestBatchSizeBytes = 500 * MemoryConstants._1MB;
         private const int c_MaxParallelismDegree = 256;
 
+        private const string c_USER_PROMPT_AUTH = "PROMPT";
+        private const string c_DEVICE_CODE_AUTH = "DEVICE_CODE";
+
         private readonly ExtendedCommandLineArgs m_args;
         private readonly KustoQueuedIngestionProperties m_ingestionProperties;
         private LoggerTracer m_logger;
-        private IPersistentStorageFactory m_persistentStorageFactory;
+
         private readonly bool m_bFileSystem;
         private readonly bool m_bWaitForIngestCompletion = false;
         private readonly TimeSpan m_ingestCompletionTimeout = TimeSpan.Zero;
@@ -48,6 +57,9 @@ namespace LightIngest
         private readonly long m_directIngestBatchSizeLimitInBytes = 0;
         private readonly int m_directIngestFilesLimitPerBatch = 0;
         private readonly bool m_bDirectIngestUseSyncMode = false;
+        private readonly string m_ingestWithManagedIdentity = null;
+        private readonly string m_connectToSorageWithUserAuth = null;
+        private readonly string m_connectToSorageLoginUri = null;
         private FixedWindowThrottlerPolicy m_fixedWindowThrottlerPolicy;
 
         private object m_objectsListingLock = new object();
@@ -76,10 +88,12 @@ namespace LightIngest
         private long m_filesUploaded = 0;
         private long m_batchesProduced = 0;
         private long m_batchesIngested = 0;
-        private Disposer m_disposer;
 
-        // PSL
+#if !OPEN_SOURCE_COMPILATION  // PSL
+        private Disposer m_disposer;
+        private IPersistentStorageFactory m_persistentStorageFactory;
         private BlobPersistentStorageFactory2 m_blob;
+#endif
         #endregion // Data members
 
         #region Statistics methods
@@ -111,7 +125,11 @@ namespace LightIngest
             m_ingestionProperties.ReportMethod = IngestionReportMethod.Queue;
 
             m_bFileSystem = Utilities.IsFileSystemPath(m_args.SourcePath);
-
+#if OPEN_SOURCE_COMPILATION
+            if (m_bFileSystem) {
+                throw new Exception("Support only ingestion from file system in open source compilation.");
+            }
+#endif
             m_estimatedCompressionRatio = args.EstimatedCompressionRatio;
 
             m_directIngestParallelRequests =
@@ -121,6 +139,9 @@ namespace LightIngest
             m_directIngestFilesLimitPerBatch =
                 (args.FilesInBatch.HasValue && args.FilesInBatch.Value >= 0) ? args.FilesInBatch.Value : 0;
             m_bDirectIngestUseSyncMode = args.ForceSync ?? false;
+            m_ingestWithManagedIdentity = args.IngestWithManagedIdentity;
+            m_connectToSorageWithUserAuth = args.ConnectToStorageWithUserAuth;
+            m_connectToSorageLoginUri = args.ConnectToStorageLoginUri;
 
             m_objectsCountQuota = m_args.Limit;
 
@@ -155,6 +176,7 @@ namespace LightIngest
 
         private void InitPSLFields()
         {
+#if !OPEN_SOURCE_COMPILATION
             m_disposer = new Disposer(GetType().FullName, "LightIngest");
             var serviceLocator = new ServiceLocator();
             var calloutValidatorFactory = new AllowAllServiceCalloutValidatorFactory();
@@ -164,6 +186,7 @@ namespace LightIngest
             var azureStorageValidator = calloutValidatorFactory.GetValidator("AzureStorage");
             m_blob = new BlobPersistentStorageFactory2(azureStorageValidator);
             m_disposer.Add(persistentStorageManager);
+#endif
         }
 
         private void Reset()
@@ -212,7 +235,7 @@ namespace LightIngest
 
             return new Ingestor(args, additionalArgs, ingestionProperties, logger);
         }
-        #endregion Construction and initialization
+#endregion Construction and initialization
 
         internal void RunQueuedIngest(KustoConnectionStringBuilder kcsb)
         {
@@ -228,7 +251,7 @@ namespace LightIngest
                 if (m_bFileSystem) // Data is in local files
                 {
                     ingestBlock = new ActionBlock<DataSource>(
-                        record => IngestSingle(record, m_objectsCountQuota, ingestClient, m_bFileSystem, false, m_ingestionProperties),
+                        record => IngestSingle(record, m_objectsCountQuota, ingestClient, m_bFileSystem, false, m_ingestionProperties, m_ingestWithManagedIdentity),
                         new ExecutionDataflowBlockOptions { MaxDegreeOfParallelism = ExtendedEnvironment.RestrictedProcessorCount });
 
                     listObjectsBlock = new ActionBlock<string>(
@@ -239,7 +262,7 @@ namespace LightIngest
                 else // Input is in blobs
                 {
                     ingestBlock = new ActionBlock<DataSource>(
-                        record => IngestSingle(record, m_objectsCountQuota, ingestClient, m_bFileSystem, false, m_ingestionProperties),
+                        record => IngestSingle(record, m_objectsCountQuota, ingestClient, m_bFileSystem, false, m_ingestionProperties, m_ingestWithManagedIdentity),
                         new ExecutionDataflowBlockOptions { MaxDegreeOfParallelism = ExtendedEnvironment.RestrictedProcessorCount });
 
                     // ListFiles calls PSL EnumerateFiles which accepts a pattern but BlobPersistentStorageFactory2 doesn't use the full pattern
@@ -326,7 +349,7 @@ namespace LightIngest
                 if (!bIngestLocally && (batches.SafeFastCount() <= c_BatchesLimitForSyncIngest || m_bDirectIngestUseSyncMode))
                 {
                     m_logger.LogVerbose($"==> Ingesting [{batches.SafeFastCount()}] batches synchronously...");
-                    RunSyncDirectIngestInBatches(kustoClient, batches, m_ingestionProperties);
+                    RunSyncDirectIngestInBatches(kustoClient, batches, m_ingestionProperties, m_ingestWithManagedIdentity);
                     m_logger.LogInfo($"==> Ingestion complete.");
                 }
                 else
@@ -481,7 +504,7 @@ namespace LightIngest
         private void RunDirectIngestInBatches(ICslAdminProvider kustoClient, IEnumerable<DataSourcesBatch> batches, bool ingestLocally)
         {
             ActionBlock<DataSourcesBatch> ingestBatchesBlock = new ActionBlock<DataSourcesBatch>(
-                batch => IngestBatch(batch, kustoClient, ingestLocally, m_ingestionProperties, m_ingestCompletionTimeout),
+                batch => IngestBatch(batch, kustoClient, ingestLocally, m_ingestionProperties, m_ingestCompletionTimeout, m_ingestWithManagedIdentity),
                 new ExecutionDataflowBlockOptions { MaxDegreeOfParallelism = m_directIngestParallelRequests });
 
             // Debugging: Allow the debugger to retrieve the DataFlow blocks:
@@ -501,13 +524,25 @@ namespace LightIngest
 
         private void RunSyncDirectIngestInBatches(ICslAdminProvider kustoClient,
                                                             IEnumerable<DataSourcesBatch> batches,
-                                                            KustoQueuedIngestionProperties ingestionProperties)
+                                                            KustoQueuedIngestionProperties ingestionProperties,
+                                                            string ingestWithManagedIdentity)
         {
             ExtendedParallel.ForEachEx(batches, m_directIngestParallelRequests, (b) =>
             {
                 try
                 {
-                    var batchUris = b.Sources.Select((s) => s.CloudFileUri).ToList();
+
+                    List<string> batchUris;
+
+                    if (!string.IsNullOrWhiteSpace(ingestWithManagedIdentity))
+                    {
+                        batchUris = b.Sources.Select((s) => $"{s.SafeCloudFileUri};managed_identity={ingestWithManagedIdentity}").ToList();
+                    }
+                    else
+                    {
+                        batchUris = b.Sources.Select((s) => s.CloudFileUri).ToList();
+                    }
+
                     var cmd = CslCommandGenerator.GenerateTableIngestPullCommand(ingestionProperties.TableName, batchUris, false,
                         extensions: ingestionProperties.AdditionalProperties,
                         tags: ingestionProperties.AdditionalTags);
@@ -581,12 +616,57 @@ namespace LightIngest
             }
         }
 
-        private void ListFiles(string sourcePath, string sourceVirtualDirectory,
-                               int filesToTake, ITargetBlock<IPersistentStorageFile> targetBlock)
+        private void EnableStorageUserAuthIfNeeded(ref string sourcePath, out IKustoTokenCredentialsProvider provider)
+        {
+            provider = null;
+
+            if (c_USER_PROMPT_AUTH.Equals(m_connectToSorageWithUserAuth, StringComparison.OrdinalIgnoreCase))
+            {
+                if (string.IsNullOrWhiteSpace(m_connectToSorageLoginUri))
+                {
+                    provider = new AadUserPromptCredentialsProvider("light ingest blob list");
+                }
+                else
+                {
+                    provider = new AadUserPromptCredentialsProvider("light ingest blob list", m_connectToSorageLoginUri);
+                }
+            }
+            else if (c_DEVICE_CODE_AUTH.Equals(m_connectToSorageWithUserAuth, StringComparison.OrdinalIgnoreCase))
+            {
+                AadDeviceCodeTokenCredentialProvider.DeviceCodeCallback callback = (msg, url, code) =>
+                {
+                    Console.WriteLine("Device Code Message: {0}", msg);
+                    return Task.CompletedTask;
+                };
+
+
+                if (string.IsNullOrWhiteSpace(m_connectToSorageLoginUri))
+                {
+                    provider = new AadDeviceCodeTokenCredentialProvider("light ingest blob list", callback);
+                }
+                else
+                {
+                    provider = new AadDeviceCodeTokenCredentialProvider("light ingest blob list", callback, m_connectToSorageLoginUri);
+                }
+            }
+
+            if (provider != null)
+            {
+                if (sourcePath.Contains(";"))
+                {
+                    sourcePath = sourcePath.SplitFirst(";");
+                }
+
+                sourcePath += ";impersonate";
+            }
+        }
+
+        private void ListFiles(string sourcePath, string sourceVirtualDirectory,int filesToTake, ITargetBlock<IPersistentStorageFile> targetBlock)
         {
             try
             {
-                IPersistentStorageContainer container = m_persistentStorageFactory.CreateContainerRef(sourcePath);
+                EnableStorageUserAuthIfNeeded(ref sourcePath, out var authProvider);
+                IPersistentStorageContainer container = m_persistentStorageFactory.CreateContainerRef(sourcePath, credentialsProvider: authProvider);
 
                 m_logger.LogVerbose($"ListFiles: enumerating files under container '{sourcePath.SplitFirst(";").SplitFirst("?")}' with prefix '{sourceVirtualDirectory}'");
 
@@ -653,7 +733,8 @@ namespace LightIngest
                                   IKustoIngestClient ingestClient,
                                   bool fromFileSystem,
                                   bool deleteSourcesOnSuccess,
-                                  KustoQueuedIngestionProperties baseIngestionProperties)
+                                  KustoQueuedIngestionProperties baseIngestionProperties,
+                                  string ingestWithManagedIdentity)
         {
             try
             {
@@ -663,6 +744,7 @@ namespace LightIngest
                     return;
                 }
 
+                string fileUri;
                 KustoQueuedIngestionProperties ingestionProperties = null;
 
                 // Take care of the CreationTime
@@ -681,8 +763,21 @@ namespace LightIngest
                     await Task.Delay(TimeSpan.FromMilliseconds(50)).ConfigureAwait(false);
                 }
 
+                if (fromFileSystem)
+                {
+                    fileUri = storageObject.FileSystemPath;
+                }
+                else if (!string.IsNullOrWhiteSpace(ingestWithManagedIdentity))
+                {
+                    fileUri = $"{storageObject.SafeCloudFileUri};managed_identity={ingestWithManagedIdentity}";
+                }
+                else
+                {
+                    fileUri = storageObject.CloudFileUri;
+                }
+
                 var result = await ingestClient.IngestFromStorageAsync(
-                            fromFileSystem ? storageObject.FileSystemPath : storageObject.CloudFileUri,
+                            fileUri,
                             ingestionProperties,
                             new StorageSourceOptions() { DeleteSourceOnSuccess = deleteSourcesOnSuccess, Size = storageObject.SizeInBytes }
                         ).ConfigureAwait(false);
@@ -786,7 +881,8 @@ namespace LightIngest
                                  ICslAdminProvider kustoClient,
                                  bool bIngestLocally,
                                  KustoIngestionProperties baseIngestionProperties,
-                                 TimeSpan ingestOperationTimeout)
+                                 TimeSpan ingestOperationTimeout,
+                                 string ingestWithManagedIdentity)
         {
             try
             {
@@ -794,6 +890,10 @@ namespace LightIngest
                 if (bIngestLocally)
                 {
                     batchUris = batch.Sources.Select((s) => s.FileSystemPath).ToList();
+                }
+                else if (!string.IsNullOrWhiteSpace(ingestWithManagedIdentity))
+                {
+                    batchUris = batch.Sources.Select((s) => $"{s.SafeCloudFileUri};managed_identity={ingestWithManagedIdentity}").ToList();
                 }
                 else
                 {
@@ -987,7 +1087,7 @@ namespace LightIngest
 
             m_logger.LogInfo(sb.ToString());
         }
-        #endregion // Private helper methods
+#endregion // Private helper methods
 
         #region DataSource and DataSourcesBatch
 

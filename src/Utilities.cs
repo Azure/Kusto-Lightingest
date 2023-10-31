@@ -6,9 +6,10 @@ using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
 using System.Threading;
-
+#if !OPEN_SOURCE_COMPILATION
 using Kusto.Cloud.Platform.AWS.PersistentStorage;
 using Kusto.Cloud.Platform.Azure.Storage;
+#endif
 using Kusto.Cloud.Platform.Storage.PersistentStorage;
 using Kusto.Cloud.Platform.Utils;
 using Kusto.Data;
@@ -120,13 +121,21 @@ namespace LightIngest
             if (cloudFile is IFileWithMetadata cloudFileWithMetadata)
             {
                 IReadOnlyDictionary<string, string> metadata = cloudFileWithMetadata.GetFileMetaDataAsync().ResultEx();
-                long? estimatedSizeBytes = GetPositiveLongProperty(metadata, (cloudFile is S3PersistentStorageFile) ? Constants.AwsMetadaRawDataSize : Constants.BlobMetadaRawDataSizeLegacy);
+                long? estimatedSizeBytes = GetPositiveLongProperty(metadata,
+#if !OPEN_SOURCE_COMPILATION
+                    (cloudFile is S3PersistentStorageFile) ? Constants.AwsMetadaRawDataSize : 
+#endif 
+                    Constants.BlobMetadaRawDataSizeLegacy);
                 if (estimatedSizeBytes.HasValue)
                 {
                     return estimatedSizeBytes.Value;
                 }
 
-                estimatedSizeBytes = GetPositiveLongProperty(metadata, (cloudFile is S3PersistentStorageFile) ? Constants.AwsMetadaRawDataSize : Constants.BlobMetadaRawDataSize);
+                estimatedSizeBytes = GetPositiveLongProperty(metadata,
+#if !OPEN_SOURCE_COMPILATION
+                    (cloudFile is S3PersistentStorageFile) ? Constants.AwsMetadaRawDataSize : 
+#endif
+                    Constants.BlobMetadaRawDataSize);
                 if (estimatedSizeBytes.HasValue)
                 {
                     return estimatedSizeBytes.Value;
@@ -156,13 +165,21 @@ namespace LightIngest
             if (cloudFile is IFileWithMetadata cloudFileWithMetadata)
             {
                 var metadata = cloudFileWithMetadata.GetFileMetaDataAsync().ResultEx();
-                DateTime? creationTimeUtc = GetDateTimeProperty(metadata, (cloudFile is S3PersistentStorageFile) ? Constants.AwsMetadataCreationTimeLegacy : Constants.BlobMetadataCreationTimeLegacy);
+                DateTime? creationTimeUtc = GetDateTimeProperty(metadata,
+#if !OPEN_SOURCE_COMPILATION
+                    (cloudFile is S3PersistentStorageFile) ? Constants.AwsMetadataCreationTimeLegacy :
+#endif
+                    Constants.BlobMetadataCreationTimeLegacy);
                 if (creationTimeUtc.HasValue)
                 {
                     return creationTimeUtc.Value;
                 }
 
-                creationTimeUtc = GetDateTimeProperty(metadata, (cloudFile is S3PersistentStorageFile) ? Constants.AwsMetadataCreationTimeUtc : Constants.BlobMetadataCreationTimeUtc);
+                creationTimeUtc = GetDateTimeProperty(metadata,
+#if !OPEN_SOURCE_COMPILATION
+                    (cloudFile is S3PersistentStorageFile) ? Constants.AwsMetadataCreationTimeUtc :
+#endif
+                    Constants.BlobMetadataCreationTimeUtc);
                 if (creationTimeUtc.HasValue)
                 {
                     return creationTimeUtc.Value;
@@ -234,16 +251,19 @@ namespace LightIngest
 
         internal static bool IsBlobStorageUri(string input, out string error)
         {
+            error = null;
             try
             {
-                var container =
-                    CloudResourceUriParser.TryCreateCloudBlobContainer(input, out error, keyOrSasMandatory: false);
+#if OPEN_SOURCE_COMPILATION
+                return input.Contains(".blob.core.");
+#else
+                var container = CloudResourceUriParser.TryCreateCloudBlobContainer(input, out error, keyOrSasMandatory: false);
                 if (container == null)
                 {
                     return S3PersistentStorageUri.IsAmazonS3Uri(input);
-                } 
-                
+                }
                 return true;
+#endif
             }
             catch (Exception ex)
             {
