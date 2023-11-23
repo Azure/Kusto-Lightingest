@@ -36,6 +36,7 @@ There are many ways to contribute to the project.
 
 ## Getting Help / Reporting Problems
 
+* [Microsoft Documentation](https://learn.microsoft.com/azure/data-explorer/lightingest)
 * [Stack Overflow](https://stackoverflow.com/questions/tagged/azure-data-explorer) - Ask questions about how to use Kusto. Start posts with 'LightIngest'. This is monitored by Kusto team members.
 * [User Voice](https://aka.ms/adx.uservoice) - Suggest new features or changes to existing features.
 * [Azure Data Explorer](https://dataexplorer.azure.com) - Give feedback or report problems using the user feedback button (top-right near settings).
