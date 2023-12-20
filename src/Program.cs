@@ -306,10 +306,13 @@ namespace LightIngest
 
         static int Main(string[] args)
         {
-        Kusto.Cloud.Platform.Utils.Library.Initialize(
+            Kusto.Cloud.Platform.Utils.Library.Initialize(
                 CloudPlatformExecutionMode.HostEnvironment,
                 ClientServerProfile.Client,
                 typeof(Program).Assembly);
+
+            // Allow tool users to use local credential
+            Kusto.Data.KustoConnectionStringBuilder.DefaultPreventAccessToLocalSecretsViaKeywords = false;
 
             try
             {

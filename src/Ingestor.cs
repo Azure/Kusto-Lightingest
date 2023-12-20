@@ -512,6 +512,7 @@ namespace LightIngest
 
             m_logger.LogVerbose("==> Flow RunDirectIngestInBatches starting...");
             batches.ForEach(ds => ingestBatchesBlock.Post(ds));
+            ingestBatchesBlock.Complete();
 
             bool bPipelineCompleted = false;
             do
@@ -917,6 +918,8 @@ namespace LightIngest
                                                                              extensions: ingestionProperties.AdditionalProperties,
                                                                              tags: ingestionProperties.AdditionalTags);
                 var operationResults = kustoClient.ExecuteAsyncControlCommand(ingestionProperties.DatabaseName, cmd, ingestOperationTimeout, TimeSpan.FromSeconds(2));
+
+                m_logger.LogInfo("==> Complete ingest");
 
                 lock (m_operationResultsLock)
                 {
