@@ -126,7 +126,7 @@ namespace LightIngest
 
             m_bFileSystem = Utilities.IsFileSystemPath(m_args.SourcePath);
 #if OPEN_SOURCE_COMPILATION
-            if (m_bFileSystem) {
+            if (!m_bFileSystem) {
                 throw new Exception("Support only ingestion from file system in open source compilation.");
             }
 #endif
@@ -664,12 +664,12 @@ namespace LightIngest
 
         private void ListFiles(string sourcePath, string sourceVirtualDirectory,int filesToTake, ITargetBlock<IPersistentStorageFile> targetBlock)
         {
+#if !OPEN_SOURCE_COMPILATION
             try
             {
                 EnableStorageUserAuthIfNeeded(ref sourcePath, out var authProvider);
                 IPersistentStorageContainer container = m_persistentStorageFactory.CreateContainerRef(sourcePath, credentialsProvider: authProvider);
-
-                m_logger.LogVerbose($"ListFiles: enumerating files under container '{sourcePath.SplitFirst(";").SplitFirst("?")}' with prefix '{sourceVirtualDirectory}'");
+            m_logger.LogVerbose($"ListFiles: enumerating files under container '{sourcePath.SplitFirst(";").SplitFirst("?")}' with prefix '{sourceVirtualDirectory}'");
 
                 if (filesToTake >= 0 && filesToTake <= Interlocked.Read(ref m_objectsAccepted))
                 {
@@ -689,8 +689,9 @@ namespace LightIngest
             }
             catch (Exception ex)
             {
-                m_logger.LogError($"Error: ListFiles failed: {ex.MessageEx()}");
+                m_logger.LogError($"Error: ListFiles failed: {ex.MessageEx(true)}");
             }
+#endif
         }
 
         private void FilterFiles(IPersistentStorageFile cloudFile, Regex patternRegex, int filesToTake, ITargetBlock<DataSource> targetBlock)
@@ -795,7 +796,7 @@ namespace LightIngest
             }
             catch (Exception ex)
             {
-                m_logger.LogError($"IngestSingle failed: {ex.Message}");
+                m_logger.LogError($"IngestSingle failed: {ex.MessageEx(true)}");
             }
         }
 
@@ -816,6 +817,8 @@ namespace LightIngest
         private IPersistentStorageContainer AcquireTempBlobContainer(ICslAdminProvider kustoClient)
         {
             IPersistentStorageContainer blobContainerRef = null;
+#if !OPEN_SOURCE_COMPILATION
+
             try
             {
                 var cmd = CslCommandGenerator.GenerateCreateTempStorageCommand();
@@ -834,6 +837,7 @@ namespace LightIngest
             {
                 m_logger.LogError($"AcquireTempBlobContainer failed: {ex.Message}");
             }
+#endif
             return blobContainerRef;
         }
 
