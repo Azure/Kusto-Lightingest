@@ -8,7 +8,7 @@ using System.Linq;
 using System.Reflection;
 using System.Text;
 using System.Threading;
-
+using Kusto.Cloud.Platform.Msal;
 using Kusto.Cloud.Platform.Utils;
 using Kusto.Data;
 using Kusto.Data.Common;
@@ -25,20 +25,23 @@ namespace LightIngest
             "",
             "Connection string pointing at a Kusto service endpoint,\r\n" +
             "For example, \"https://ingest-contoso.westus.kusto.windows.net;Fed=true\"\r\n" +
-            "Database can also be specified within the connection string: \"https://ingest-contoso.westus.kusto.windows.net;Fed=true;Initial Catalog=NetDefaultDB\"\r\n" +
+            "Database can also be specified within the connection string: \"https://ingest-contoso.westus.kusto.windows.net;Fed=true;Initial Catalog=NetDefaultDB.\"\r\n" +
             "For complete Kusto Connection String documentation, see https://docs.microsoft.com/azure/kusto/api/connection-strings/kusto",
             DefaultValue = "https://ingest-contoso.westus.kusto.windows.net;Fed=true")]
         public string ConnectionString = "https://ingest-contoso.westus.kusto.windows.net;Fed=true";
 
         [CommandLineArg(
             "managedIdentity",
-            "Client Id of the managed identity (user-assigned or system-assigned) to be used for connecting to Kusto. Use \"system\" for system-assigned identity.",
+            "Client Id of the managed identity (user-assigned or system-assigned) to be used for connecting to Kusto. Use \"system\" for system-assigned identity.\r\n" +
+            "The managed identity needs at least 'Table Ingestor' permissions on the target Ksuto table.\r\n" +
+            "The managed identity needs to be configured in the azure service that currently runs this tool.",
             ShortName = "mi", Mandatory = false)]
         public string ConnectWithManagedIdentity = null;
 
         [CommandLineArg(
             "ingestWithManagedIdentity",
-            "Client id of the managed identity (user-assigned or system-assigned) to be used by Kusto to download the data. Use \"system\" for system-assigned identity.",
+            "Client id of the managed identity (user-assigned or system-assigned) to be used by Kusto to download the data. Use \"system\" for system-assigned identity.\r\n" +
+            "The managed identity needs 'Read' permissions over the blobs and to be configured in the Kusto service.",
             ShortName = "ingestmi", Mandatory = false)]
         public string IngestWithManagedIdentity = null;
 
@@ -67,7 +70,8 @@ namespace LightIngest
 
         [CommandLineArg(
             "ConnectToStorageWithUserAuth",
-            "Optionally authenticate to the data source storage service with user credentials.\r\n" +
+            "Optionally authenticate to the data source storage service with user credentials for listing of the container. Use this if you cannot configure keys on the sourcePath.\r\n" +
+            "The identity used here needs at least 'Read' and 'List' privileges on the container.\r\n" +
             "Options: 'PROMPT', 'DEVICE_CODE'\r\n" +
             "Default: Off",
             ShortName = "storageUserAuth",
@@ -76,11 +80,19 @@ namespace LightIngest
 
         [CommandLineArg(
             "ConnectToStorageLoginUri",
-            "If ConnectToStorageWithUserAuth is 'PROMPT' or 'DEVICE_CODE', optionally provide the AAD login Uri.\r\n" +
+            "If 'ConnectToStorageWithUserAuth' is not default, optionally provide the AAD login Uri.\r\n" +
             "Default: Public Azure Cloud login Uri",
             ShortName = "storageLoginUri",
             Mandatory = false)]
         public string ConnectToStorageLoginUri = "";
+
+        [CommandLineArg(
+          "connectToStorageWithManagedIdentity",
+          "Optionally authenticate to the data source storage service with managed identity credentials.\r\n" +
+          "Provide here the Client id of the managed identity (user-assigned or system-assigned). Use \"system\" for system-assigned identity." +
+          "The managed identity needs to be configured in the azure service that currently runs this tool.",
+          ShortName = "storageMi", Mandatory = false)]
+        public string ConnectToStorageWithManagedIdentity = null;
 
         [CommandLineArg(
             "pattern",
@@ -241,15 +253,16 @@ namespace LightIngest
 
             esb.AppendLine($"Connection string          : {ConnectionString}");
             if (!string.IsNullOrWhiteSpace(ConnectWithManagedIdentity)) { esb.AppendLine($"-managedIdentity           : {ConnectWithManagedIdentity}"); }
-            if (!string.IsNullOrWhiteSpace(IngestWithManagedIdentity)) { esb.AppendLine($"-ingestWithManagedIdentity : {IngestWithManagedIdentity}"); }
 
             esb.AppendLine($"-database                  : {DatabaseName}");
             esb.AppendLine($"-table                     : {TableName}");
             esb.AppendLine();
 
             esb.AppendLine($"-sourcePath                : {SourcePath}");
-            if (!string.IsNullOrWhiteSpace(ConnectToStorageWithUserAuth)) { esb.AppendLine($"-ConnectToStorageWithUserAuth : {ConnectToStorageWithUserAuth}"); }
-            if (!string.IsNullOrWhiteSpace(ConnectToStorageLoginUri)) { esb.AppendLine($"-ConnectToStorageLoginUri : {ConnectToStorageLoginUri}"); }
+            if (!string.IsNullOrWhiteSpace(ConnectToStorageWithUserAuth)) { esb.AppendLine($"-connectToStorageWithUserAuth : {ConnectToStorageWithUserAuth}"); }
+            if (!string.IsNullOrWhiteSpace(IngestWithManagedIdentity)) { esb.AppendLine($"-ingestWithManagedIdentity : {IngestWithManagedIdentity}"); }
+            if (!string.IsNullOrWhiteSpace(ConnectToStorageWithManagedIdentity)) { esb.AppendLine($"-ConnectToStorageWithManagedIdentity : {ConnectToStorageWithManagedIdentity}"); }
+            if (!string.IsNullOrWhiteSpace(ConnectToStorageLoginUri)) { esb.AppendLine($"-connectToStorageLoginUri : {ConnectToStorageLoginUri}"); }
 
             if (!string.IsNullOrWhiteSpace(Prefix)) { esb.AppendLine($"-prefix                    : {Prefix}"); }
             esb.AppendLine($"-pattern                   : {Pattern}");
@@ -706,6 +719,17 @@ namespace LightIngest
             }
 
             ValidateSourcePath();
+
+            if (!string.IsNullOrEmpty(m_args.ConnectToStorageWithManagedIdentity))
+            {
+                if (!m_args.ConnectToStorageWithManagedIdentity.Equals(AadManagedIdentityTokenCredentialsProvider.SystemAssignedManagedIdentityKeyword) && 
+                    !Guid.TryParse(m_args.ConnectToStorageWithManagedIdentity, out _))
+                {
+                    throw new UtilsArgumentException(
+                       $"Command line arguments error. If 'ConnectToStorageWithManagedIdentity' expected either Guid or \"system\".", null);
+                }
+               
+            }
         }
 
         private void ValidateSourcePath()

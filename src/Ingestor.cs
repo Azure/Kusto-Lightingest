@@ -58,8 +58,9 @@ namespace LightIngest
         private readonly int m_directIngestFilesLimitPerBatch = 0;
         private readonly bool m_bDirectIngestUseSyncMode = false;
         private readonly string m_ingestWithManagedIdentity = null;
-        private readonly string m_connectToSorageWithUserAuth = null;
-        private readonly string m_connectToSorageLoginUri = null;
+        private readonly string m_connectToStorageWithUserAuth = null;
+        private readonly string m_connectToStorageLoginUri = null;
+        private readonly string m_connectToStorageWithManagedIdentity = null;
         private FixedWindowThrottlerPolicy m_fixedWindowThrottlerPolicy;
 
         private object m_objectsListingLock = new object();
@@ -140,8 +141,9 @@ namespace LightIngest
                 (args.FilesInBatch.HasValue && args.FilesInBatch.Value >= 0) ? args.FilesInBatch.Value : 0;
             m_bDirectIngestUseSyncMode = args.ForceSync ?? false;
             m_ingestWithManagedIdentity = args.IngestWithManagedIdentity;
-            m_connectToSorageWithUserAuth = args.ConnectToStorageWithUserAuth;
-            m_connectToSorageLoginUri = args.ConnectToStorageLoginUri;
+            m_connectToStorageWithUserAuth = args.ConnectToStorageWithUserAuth;
+            m_connectToStorageLoginUri = args.ConnectToStorageLoginUri;
+            m_connectToStorageWithManagedIdentity = args.ConnectToStorageWithManagedIdentity;
 
             m_objectsCountQuota = m_args.Limit;
 
@@ -620,19 +622,20 @@ namespace LightIngest
         private void EnableStorageUserAuthIfNeeded(ref string sourcePath, out IKustoTokenCredentialsProvider provider)
         {
             provider = null;
-
-            if (c_USER_PROMPT_AUTH.Equals(m_connectToSorageWithUserAuth, StringComparison.OrdinalIgnoreCase))
+            var semiColonSecret = ";impersonate";
+            var providerName = "light ingest blob list";
+            if (c_USER_PROMPT_AUTH.Equals(m_connectToStorageWithUserAuth, StringComparison.OrdinalIgnoreCase))
             {
-                if (string.IsNullOrWhiteSpace(m_connectToSorageLoginUri))
+                if (string.IsNullOrWhiteSpace(m_connectToStorageLoginUri))
                 {
-                    provider = new AadUserPromptCredentialsProvider("light ingest blob list");
+                    provider = new AadUserPromptCredentialsProvider(providerName);
                 }
                 else
                 {
-                    provider = new AadUserPromptCredentialsProvider("light ingest blob list", m_connectToSorageLoginUri);
+                    provider = new AadUserPromptCredentialsProvider(providerName, m_connectToStorageLoginUri);
                 }
             }
-            else if (c_DEVICE_CODE_AUTH.Equals(m_connectToSorageWithUserAuth, StringComparison.OrdinalIgnoreCase))
+            else if (c_DEVICE_CODE_AUTH.Equals(m_connectToStorageWithUserAuth, StringComparison.OrdinalIgnoreCase))
             {
                 AadDeviceCodeTokenCredentialProvider.DeviceCodeCallback callback = (msg, url, code) =>
                 {
@@ -641,24 +644,25 @@ namespace LightIngest
                 };
 
 
-                if (string.IsNullOrWhiteSpace(m_connectToSorageLoginUri))
+                if (string.IsNullOrWhiteSpace(m_connectToStorageLoginUri))
                 {
-                    provider = new AadDeviceCodeTokenCredentialProvider("light ingest blob list", callback);
+                    provider = new AadDeviceCodeTokenCredentialProvider(providerName, callback);
                 }
                 else
                 {
-                    provider = new AadDeviceCodeTokenCredentialProvider("light ingest blob list", callback, m_connectToSorageLoginUri);
+                    provider = new AadDeviceCodeTokenCredentialProvider(providerName, callback, m_connectToStorageLoginUri);
                 }
+            }
+            else if (!string.IsNullOrEmpty(m_connectToStorageWithManagedIdentity))
+            {
+                provider = AadManagedIdentityTokenCredentialsProvider.CreateProviderFromString(m_connectToStorageWithManagedIdentity);
+                semiColonSecret = ";managed_identity=" + m_connectToStorageWithManagedIdentity;
             }
 
             if (provider != null)
             {
-                if (sourcePath.Contains(";"))
-                {
-                    sourcePath = sourcePath.SplitFirst(";");
-                }
-
-                sourcePath += ";impersonate";
+                sourcePath = sourcePath.SplitFirst(new[] { ';', '?' });
+                sourcePath += semiColonSecret;
             }
         }
 
@@ -669,7 +673,7 @@ namespace LightIngest
             {
                 EnableStorageUserAuthIfNeeded(ref sourcePath, out var authProvider);
                 IPersistentStorageContainer container = m_persistentStorageFactory.CreateContainerRef(sourcePath, credentialsProvider: authProvider);
-            m_logger.LogVerbose($"ListFiles: enumerating files under container '{sourcePath.SplitFirst(";").SplitFirst("?")}' with prefix '{sourceVirtualDirectory}'");
+                m_logger.LogVerbose($"ListFiles: enumerating files under container '{sourcePath.SplitFirst(";").SplitFirst("?")}' with prefix '{sourceVirtualDirectory}'");
 
                 if (filesToTake >= 0 && filesToTake <= Interlocked.Read(ref m_objectsAccepted))
                 {
