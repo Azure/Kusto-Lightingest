@@ -6,6 +6,8 @@ using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
 using System.Threading;
+using System.Threading.Tasks;
+
 #if !OPEN_SOURCE_COMPILATION
 using Kusto.Cloud.Platform.AWS.PersistentStorage;
 using Kusto.Cloud.Platform.Azure.Storage;
@@ -116,11 +118,11 @@ namespace LightIngest
             return 0L;
         }
 
-        internal static long EstimateFileSize(IPersistentStorageFile cloudFile, double estimatedCompressionRatio)
+        internal static async Task<long> EstimateFileSizeAsync(IPersistentStorageFile cloudFile, double estimatedCompressionRatio)
         {
             if (cloudFile is IFileWithMetadata cloudFileWithMetadata)
             {
-                IReadOnlyDictionary<string, string> metadata = cloudFileWithMetadata.GetFileMetaDataAsync().ResultEx();
+                IReadOnlyDictionary<string, string> metadata = await cloudFileWithMetadata.GetFileMetaDataAsync();
                 long? estimatedSizeBytes = GetPositiveLongProperty(metadata,
 #if !OPEN_SOURCE_COMPILATION
                     (cloudFile is S3PersistentStorageFile) ? Constants.AwsMetadaRawDataSize : 
@@ -142,7 +144,7 @@ namespace LightIngest
                 }
             }
 
-            long blobSize = cloudFile.GetLength();
+            long blobSize = await cloudFile.GetLengthAsync();
             string blobName = cloudFile.GetFileName();
 
             // TODO: we need to add proper handling per format
@@ -159,12 +161,12 @@ namespace LightIngest
             return TryParseDateTimeUtcFromString(path, fileCreationTimeFormat);
         }
 
-        internal static DateTime? InferFileCreationTimeUtc(IPersistentStorageFile cloudFile, DateTimeFormatPattern blobCreationTimeFormat)
+        internal static async Task<DateTime?> InferFileCreationTimeUtcAsync(IPersistentStorageFile cloudFile, DateTimeFormatPattern blobCreationTimeFormat)
         {
             // Metadata always wins, as it is more deliberate
             if (cloudFile is IFileWithMetadata cloudFileWithMetadata)
             {
-                var metadata = cloudFileWithMetadata.GetFileMetaDataAsync().ResultEx();
+                var metadata = await cloudFileWithMetadata.GetFileMetaDataAsync();
                 DateTime? creationTimeUtc = GetDateTimeProperty(metadata,
 #if !OPEN_SOURCE_COMPILATION
                     (cloudFile is S3PersistentStorageFile) ? Constants.AwsMetadataCreationTimeLegacy :

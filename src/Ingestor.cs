@@ -61,9 +61,10 @@ namespace LightIngest
         private readonly string m_connectToStorageWithUserAuth = null;
         private readonly string m_connectToStorageLoginUri = null;
         private readonly string m_connectToStorageWithManagedIdentity = null;
-        private FixedWindowThrottlerPolicy m_fixedWindowThrottlerPolicy;
+        private FixedWindowThrottlerPolicy m_ingestionFixedWindowThrottlerPolicy;
+        private FixedWindowThrottlerPolicy m_listingFixedWindowThrottlerPolicy;
 
-        private object m_objectsListingLock = new object();
+        SemaphoreSlim m_listingLockOrNull;
 
         // Ingestion results for queued ingest flow when confirmation is required
         private object m_ingestionResultsLock = new object();
@@ -94,6 +95,9 @@ namespace LightIngest
         private Disposer m_disposer;
         private IPersistentStorageFactory m_persistentStorageFactory;
         private BlobPersistentStorageFactory2 m_blob;
+        private const int c_maxBlocksCapacity = 10000;
+        private const int c_delayOnThrottlingMs = 50;
+        private readonly TimeSpan c_ingestionRateTime = TimeSpan.FromSeconds(1);
 #endif
         #endregion // Data members
 
@@ -172,7 +176,10 @@ namespace LightIngest
 
             m_ingestionProperties.IgnoreSizeLimit = m_args.NoSizeLimit;
 
-            m_fixedWindowThrottlerPolicy = new FixedWindowThrottlerPolicy(args.IngestionRateCount, TimeSpan.FromSeconds(args.IngestionRateTime));
+            m_ingestionFixedWindowThrottlerPolicy = new FixedWindowThrottlerPolicy(args.IngestionRateCount, c_ingestionRateTime);
+            m_listingFixedWindowThrottlerPolicy = new FixedWindowThrottlerPolicy(args.ListingRateCount, c_ingestionRateTime);
+
+            m_listingLockOrNull = m_objectsCountQuota > 0 ? new SemaphoreSlim(initialCount: 1, maxCount: 1) : null;
             InitPSLFields();
         }
 
@@ -237,7 +244,7 @@ namespace LightIngest
 
             return new Ingestor(args, additionalArgs, ingestionProperties, logger);
         }
-#endregion Construction and initialization
+        #endregion Construction and initialization
 
         internal void RunQueuedIngest(KustoConnectionStringBuilder kcsb)
         {
@@ -265,13 +272,13 @@ namespace LightIngest
                 {
                     ingestBlock = new ActionBlock<DataSource>(
                         record => IngestSingle(record, m_objectsCountQuota, ingestClient, m_bFileSystem, false, m_ingestionProperties, m_ingestWithManagedIdentity),
-                        new ExecutionDataflowBlockOptions { MaxDegreeOfParallelism = ExtendedEnvironment.RestrictedProcessorCount });
+                        new ExecutionDataflowBlockOptions { MaxDegreeOfParallelism = ExtendedEnvironment.RestrictedProcessorCount, BoundedCapacity = c_maxBlocksCapacity, EnsureOrdered = false });
 
                     // ListFiles calls PSL EnumerateFiles which accepts a pattern but BlobPersistentStorageFactory2 doesn't use the full pattern
                     // but only its prefix, therefore we still have to filter ourselves.
                     filterObjectsBlock = new ActionBlock<IPersistentStorageFile>(
-                        file => FilterFiles(file, m_patternRegex, m_objectsCountQuota, ingestBlock),
-                        new ExecutionDataflowBlockOptions { MaxDegreeOfParallelism = ExtendedEnvironment.RestrictedProcessorCount });
+                        file => FilterFilesAsync(file, m_patternRegex, m_objectsCountQuota, ingestBlock),
+                        new ExecutionDataflowBlockOptions { MaxDegreeOfParallelism = ExtendedEnvironment.RestrictedProcessorCount, BoundedCapacity = c_maxBlocksCapacity, EnsureOrdered = false });
                     filterObjectsBlock.Completion.ContinueWith(delegate { ingestBlock.Complete(); });
 
                     listObjectsBlock = new ActionBlock<string>(
@@ -415,7 +422,7 @@ namespace LightIngest
                     new ExecutionDataflowBlockOptions { MaxDegreeOfParallelism = ExtendedEnvironment.RestrictedProcessorCount });
 
                 filterObjectsBlock = new ActionBlock<IPersistentStorageFile>(
-                    file => FilterFiles(file, m_patternRegex, m_objectsCountQuota, simulatedIngestBlock),
+                    file => FilterFilesAsync(file, m_patternRegex, m_objectsCountQuota, simulatedIngestBlock),
                     new ExecutionDataflowBlockOptions { MaxDegreeOfParallelism = ExtendedEnvironment.RestrictedProcessorCount });
                 filterObjectsBlock.Completion.ContinueWith(delegate { simulatedIngestBlock.Complete(); });
 
@@ -472,11 +479,11 @@ namespace LightIngest
             {
                 uploadOrAccumulateBlock = new ActionBlock<DataSource>(
                     record => AccumulateObjects(record),
-                    new ExecutionDataflowBlockOptions { MaxDegreeOfParallelism = ExtendedEnvironment.RestrictedProcessorCount });
+                    new ExecutionDataflowBlockOptions { MaxDegreeOfParallelism = ExtendedEnvironment.RestrictedProcessorCount, BoundedCapacity = c_maxBlocksCapacity, EnsureOrdered = false });
 
                 filterObjectsBlock = new ActionBlock<IPersistentStorageFile>(
-                    file => FilterFiles(file, m_patternRegex, m_objectsCountQuota, uploadOrAccumulateBlock),
-                    new ExecutionDataflowBlockOptions { MaxDegreeOfParallelism = ExtendedEnvironment.RestrictedProcessorCount });
+                    file => FilterFilesAsync(file, m_patternRegex, m_objectsCountQuota, uploadOrAccumulateBlock),
+                    new ExecutionDataflowBlockOptions { MaxDegreeOfParallelism = ExtendedEnvironment.RestrictedProcessorCount, BoundedCapacity = c_maxBlocksCapacity, EnsureOrdered = false });
                 filterObjectsBlock.Completion.ContinueWith(delegate { uploadOrAccumulateBlock.Complete(); });
 
                 listObjectsBlock = new ActionBlock<string>(
@@ -666,7 +673,7 @@ namespace LightIngest
             }
         }
 
-        private void ListFiles(string sourcePath, string sourceVirtualDirectory,int filesToTake, ITargetBlock<IPersistentStorageFile> targetBlock)
+        private void ListFiles(string sourcePath, string sourceVirtualDirectory, int filesToTake, ITargetBlock<IPersistentStorageFile> targetBlock)
         {
 #if !OPEN_SOURCE_COMPILATION
             try
@@ -686,7 +693,11 @@ namespace LightIngest
 
                 ExtendedParallel.ForEach(sourceFiles, m_directIngestParallelRequests, r =>
                 {
-                    targetBlock.SendAsync(r);
+                    while (!m_listingFixedWindowThrottlerPolicy.ShouldInvoke())
+                    {
+                        Task.Delay(TimeSpan.FromMilliseconds(c_delayOnThrottlingMs)).ConfigureAwait(false).ResultEx();
+                    }
+                    targetBlock.SendAsync(r).ConfigureAwait(false).ResultEx();
                     Interlocked.Increment(ref m_objectsListed);
                 });
 
@@ -698,39 +709,40 @@ namespace LightIngest
 #endif
         }
 
-        private void FilterFiles(IPersistentStorageFile cloudFile, Regex patternRegex, int filesToTake, ITargetBlock<DataSource> targetBlock)
+        private async Task FilterFilesAsync(IPersistentStorageFile cloudFile, Regex patternRegex, int filesToTake, ITargetBlock<DataSource> targetBlock)
         {
             try
             {
                 if (cloudFile != null && (patternRegex == null || patternRegex.IsMatch(cloudFile.GetFileName())))
                 {
-                    // we are taking this lock here in order to not process more items than specified.
-                    lock (m_objectsListingLock)
+                    // Semaphore is used in order to not process more items than specified, if not specified - it is null.
+                    m_listingLockOrNull?.Wait();
+
+                    if (filesToTake >= 0 && filesToTake <= Interlocked.Read(ref m_objectsAccepted))
                     {
-                        if (filesToTake >= 0 && filesToTake <= Interlocked.Read(ref m_objectsAccepted))
-                        {
-                            // we're done, don't need new stuff
-                            return;
-                        }
-
-                        long size = Utilities.EstimateFileSize(cloudFile, m_estimatedCompressionRatio);
-                        DateTime? creationTime = Utilities.InferFileCreationTimeUtc(cloudFile, m_creationTimeInNamePattern);
-
-                        targetBlock.SendAsync(new DataSource
-                        {
-                            CloudFileUri = $"{cloudFile.GetUnsecureUri()}",
-                            SafeCloudFileUri = cloudFile.GetFileUri(),
-                            SizeInBytes = size,
-                            CreationTimeUtc = creationTime
-                        });
-
-                        Interlocked.Increment(ref m_objectsAccepted);
+                        m_listingLockOrNull?.Release();
+                        // We're done, don't need new stuff
+                        return;
                     }
+
+                    m_listingLockOrNull?.Release();
+                    long size = await Utilities.EstimateFileSizeAsync(cloudFile, m_estimatedCompressionRatio);
+                    DateTime? creationTime = await Utilities.InferFileCreationTimeUtcAsync(cloudFile, m_creationTimeInNamePattern);
+
+                    await targetBlock.SendAsync(new DataSource
+                    {
+                        CloudFileUri = $"{cloudFile.GetUnsecureUri()}",
+                        SafeCloudFileUri = cloudFile.GetFileUri(),
+                        SizeInBytes = size,
+                        CreationTimeUtc = creationTime
+                    });
+
+                    Interlocked.Increment(ref m_objectsAccepted);
                 }
             }
             catch (Exception ex)
             {
-                m_logger.LogError($"FilterFiles failed: {ex.Message}");
+                m_logger.LogError($"FilterFilesAsync failed on blob '{cloudFile.GetFileUri()}', error: {ex.Message}");
             }
         }
 
@@ -764,9 +776,9 @@ namespace LightIngest
                     ingestionProperties = baseIngestionProperties;
                 }
 
-                while (!await m_fixedWindowThrottlerPolicy.ShouldInvokeAsync().ConfigureAwait(false))
+                while (!await m_ingestionFixedWindowThrottlerPolicy.ShouldInvokeAsync().ConfigureAwait(false))
                 {
-                    await Task.Delay(TimeSpan.FromMilliseconds(50)).ConfigureAwait(false);
+                    await Task.Delay(TimeSpan.FromMilliseconds(c_delayOnThrottlingMs)).ConfigureAwait(false);
                 }
 
                 if (fromFileSystem)
@@ -800,7 +812,7 @@ namespace LightIngest
             }
             catch (Exception ex)
             {
-                m_logger.LogError($"IngestSingle failed: {ex.MessageEx(true)}");
+                m_logger.LogError($"IngestSingle failed on blob '{storageObject.SafeCloudFileUri}', error:  {ex.MessageEx(true)}");
             }
         }
 
@@ -1098,7 +1110,7 @@ namespace LightIngest
 
             m_logger.LogInfo(sb.ToString());
         }
-#endregion // Private helper methods
+        #endregion // Private helper methods
 
         #region DataSource and DataSourcesBatch
 

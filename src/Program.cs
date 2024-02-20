@@ -238,12 +238,14 @@ namespace LightIngest
 
         [CommandLineArg("repeatCount", "Number of repetitions of the whole ingest cycle (0: no repetitions, -1: repeat indefinitely)", ShortName = "repeat", Mandatory = false)]
         public int RepeatCount = 0;
+        #endregion
 
-        [CommandLineArg("ingestionRateCount", "Number of blobs queued in one time window.", ShortName = "rateCount", Mandatory = false, DefaultValue = 500)]
+        #region Parameters to tune the rate of requests
+        [CommandLineArg("ingestionRateCount", "Number of blobs queued in one second.", ShortName = "rateCount", Mandatory = false, DefaultValue = 500)]
         public uint IngestionRateCount = 500;
 
-        [CommandLineArg("ingestionRateTime", "Duration of time window in seconds.", ShortName = "rateTime", Mandatory = false, DefaultValue = 1)]
-        public uint IngestionRateTime = 1;
+        [CommandLineArg("listingRateCount", "Number of blobs listed in one second.", ShortName = "listRateCount", Mandatory = false, DefaultValue = 500)]
+        public uint ListingRateCount = 500;
         #endregion
 
         public string FormattedParametersSummary()
@@ -291,8 +293,8 @@ namespace LightIngest
             if (RepeatCount > 0) { esb.AppendLine($"-repeatCount               : {RepeatCount}"); }
             if (!string.Equals(DevTracing, "*")) { esb.AppendLine($"-trace                     : {DevTracing}"); }
             esb.AppendLine($"-ingestionRateCount        : {IngestionRateCount}");
-            esb.AppendLine($"-ingestionRateTime         : {IngestionRateTime}");
-            
+            esb.AppendLine($"-listingRateCount        : {IngestionRateCount}");
+
             esb.Unindent();
             return esb.ToString();
         }
