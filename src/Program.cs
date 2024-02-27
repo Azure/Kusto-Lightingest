@@ -25,10 +25,14 @@ namespace LightIngest
             "",
             "Connection string pointing at a Kusto service endpoint,\r\n" +
             "For example, \"https://ingest-contoso.westus.kusto.windows.net;Fed=true\"\r\n" +
-            "Database can also be specified within the connection string: \"https://ingest-contoso.westus.kusto.windows.net;Fed=true;Initial Catalog=NetDefaultDB.\"\r\n" +
-            "For complete Kusto Connection String documentation, see https://docs.microsoft.com/azure/kusto/api/connection-strings/kusto",
-            DefaultValue = "https://ingest-contoso.westus.kusto.windows.net;Fed=true")]
-        public string ConnectionString = "https://ingest-contoso.westus.kusto.windows.net;Fed=true";
+            "To login as a specific user use \"https://ingest-<cluster hostname>.kusto.windows.net;User={UserId};Fed=true\".\r\n" +
+            "To login to a specific tenant authority Id add ';AuthorityId=<tenantId>' to the connection string.\".\r\n" +
+            "To use managed identity to authenticate to Kusto service use the 'managedIdentity' arg.\r\n" +
+            "To use app + key authentication use \"https://ingest-<cluster hostname>.kusto.windows.net;AppClientId=<appid>;AppKey=<key>;AuthorityId=<tenantId>;Fed=true\".\r\n" +
+            "To use app + certificate thumbprint authentication use \"https://ingest-<cluster hostname>.kusto.windows.net;AppClientId={appId};Application Certificate Thumbprint={thumbprint};AuthorityId={tenantId};Fed=true\".\r\n" +
+            "To use app + certificate subject distinguished name authentication use \"https://ingest-<cluster hostname>.kusto.windows.net;AppClientId={appId};Subject={SubjectName};AuthorityId={tenantId};Fed=true\".\r\n" +
+            "For complete Kusto Connection String documentation, see https://docs.microsoft.com/azure/kusto/api/connection-strings/kusto")]
+        public string ConnectionString = "https://ingest-<cluster hostname>.kusto.windows.net;Fed=true";
 
         [CommandLineArg(
             "managedIdentity",
