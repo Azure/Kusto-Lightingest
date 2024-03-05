@@ -26,11 +26,55 @@ using Kusto.Data.Net.Client;
 using Kusto.Ingest;
 #if !OPEN_SOURCE_COMPILATION
 using Kusto.Common.Svc.Storage;
+using System.Data;
 #endif
 
 
 namespace LightIngest
 {
+    /// <summary>
+    /// Check if a hostname matches a known storage pattern 
+    /// This class bypasses the need to rely on Cloud Settings
+    /// </summary>
+    public class AzureStorageMatcher
+    {
+        private static readonly List<(string SearchPattern, string ServiceName)> s_azureStorageDnsSegments = new List<(string SearchPattern, string ServiceName)>()
+        {
+            // Azure Storage 
+            ( ".blob.core.", KustoPersistentStorageManager.AzureStorageServiceName ),
+            ( ".file.core.", KustoPersistentStorageManager.AzureStorageServiceName ),
+            ( ".queue.core.", KustoPersistentStorageManager.AzureStorageServiceName ),
+            ( ".table.core.", KustoPersistentStorageManager.AzureStorageServiceName ),
+            ( ".blob.storage.", KustoPersistentStorageManager.AzureStorageServiceName ),
+            ( ".file.storage.", KustoPersistentStorageManager.AzureStorageServiceName ),
+            ( ".queue.storage.", KustoPersistentStorageManager.AzureStorageServiceName ),
+            ( ".table.storage.", KustoPersistentStorageManager.AzureStorageServiceName ),
+
+            // Azure Data Lake Gen 1
+            ( ".azuredatalakestore.", KustoPersistentStorageManager.AdlsGen1ServiceName ),
+
+            // Azure Data Lake Gen 2
+            ( ".dfs.core.", KustoPersistentStorageManager.AdlsGen2ServiceName ),
+            ( ".dfs.storage.", KustoPersistentStorageManager.AdlsGen2ServiceName ),
+
+            // Amazon S3
+            ( ".amazonaws.com", KustoPersistentStorageManager.S3ServiceName )
+        };
+
+        public (bool IsMatch, string ServiceName) Match(string candidate)
+        {
+            foreach(var rule in s_azureStorageDnsSegments) 
+            { 
+                if (candidate.Contains(rule.SearchPattern))
+                {
+                    return (IsMatch: true, ServiceName: rule.ServiceName);
+                }
+            }
+
+            return (IsMatch: false, ServiceName: null);
+        }
+    }
+
     internal class Ingestor
     {
         #region Data members
@@ -187,10 +231,17 @@ namespace LightIngest
         {
 #if !OPEN_SOURCE_COMPILATION
             m_disposer = new Disposer(GetType().FullName, "LightIngest");
+            var serviceMatcher = new AzureStorageMatcher();
             var serviceLocator = new ServiceLocator();
             var calloutValidatorFactory = new AllowAllServiceCalloutValidatorFactory();
             var persistentStorageManager = KustoPersistentStorageManager.CreateAndRegister(
-                "LightIngest", serviceLocator, calloutValidatorFactory, featureFlags: null, registerOnelakeFactory: false);
+                "LightIngest",
+                serviceLocator,
+                (candidate) => serviceMatcher.Match(candidate),
+                calloutValidatorFactory,
+                featureFlags: null,
+                registerOnelakeFactory: false) ;
+
             m_persistentStorageFactory = persistentStorageManager.Factory;
             var azureStorageValidator = calloutValidatorFactory.GetValidator("AzureStorage");
             m_blob = new BlobPersistentStorageFactory2(azureStorageValidator);
