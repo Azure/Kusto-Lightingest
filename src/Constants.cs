@@ -10,15 +10,15 @@ namespace LightIngest
     internal static class Constants
     {
         // Kusto blob metadata keys
-        internal const string BlobMetadaRawDataSize = "kustoUncompressedSizeBytes";
-        internal const string BlobMetadaRawDataSizeLegacy = "rawSizeBytes";
+        internal const string BlobMetadataRawDataSize = "kustoUncompressedSizeBytes";
+        internal const string BlobMetadataRawDataSizeLegacy = "rawSizeBytes";
         internal const string BlobMetadataCreationTimeUtc = "kustoCreationTimeUtc";
         internal const string BlobMetadataCreationTimeLegacy = "kustoCreationTime";
 
 #if !OPEN_SOURCE_COMPILATION
         // Kusto aws metadata keys
-        internal static readonly string AwsMetadaRawDataSize = (S3PersistentStorageFile.AwsUserDefinedMetadataPrefix + BlobMetadaRawDataSize).ToLower();
-        internal static readonly string AwsMetadaRawDataSizeLegacy = (S3PersistentStorageFile.AwsUserDefinedMetadataPrefix + BlobMetadaRawDataSizeLegacy).ToLower();
+        internal static readonly string AwsMetadataRawDataSize = (S3PersistentStorageFile.AwsUserDefinedMetadataPrefix + BlobMetadataRawDataSize).ToLower();
+        internal static readonly string AwsMetadataRawDataSizeLegacy = (S3PersistentStorageFile.AwsUserDefinedMetadataPrefix + BlobMetadataRawDataSizeLegacy).ToLower();
         internal static readonly string AwsMetadataCreationTimeUtc = (S3PersistentStorageFile.AwsUserDefinedMetadataPrefix + BlobMetadataCreationTimeUtc).ToLower();
         internal static readonly string AwsMetadataCreationTimeLegacy = (S3PersistentStorageFile.AwsUserDefinedMetadataPrefix + BlobMetadataCreationTimeLegacy).ToLower();
 #endif

@@ -26,6 +26,7 @@ using Kusto.Data.Net.Client;
 using Kusto.Ingest;
 #if !OPEN_SOURCE_COMPILATION
 using Kusto.Common.Svc.Storage;
+using System.Collections;
 using System.Data;
 #endif
 
@@ -739,7 +740,7 @@ namespace LightIngest
                 }
 
                 var sourceFiles = container.EnumerateFiles(
-                    pattern: sourceVirtualDirectory + "*"
+                    pattern: sourceVirtualDirectory + "*", withMetadata: true
                 );
 
                 ExtendedParallel.ForEach(sourceFiles, m_directIngestParallelRequests, r =>
@@ -766,35 +767,47 @@ namespace LightIngest
             {
                 if (cloudFile != null && (patternRegex == null || patternRegex.IsMatch(cloudFile.GetFileName())))
                 {
-                    // Semaphore is used in order to not process more items than specified, if not specified - it is null.
-                    m_listingLockOrNull?.Wait();
+                    try
+                    {
+                        // Semaphore is used in order to not process more items than specified, if not specified - it is null.
+                        m_listingLockOrNull?.Wait();
 
-                    if (filesToTake >= 0 && filesToTake <= Interlocked.Read(ref m_objectsAccepted))
+                        if (filesToTake >= 0 && filesToTake <= Interlocked.Read(ref m_objectsAccepted))
+                        {
+                            // We're done, don't need new stuff
+                            return;
+                        }
+
+                        var res = await RetryOperation.RetryAsync<Exception, (long, DateTime?)>(
+                            maxNumberOfTries: 3,
+                            waitInterval: TimeSpan.FromSeconds(10),
+                            description: "Fetch file metadata",
+                            async () =>
+                            {
+                                long size = await Utilities.EstimateFileSizeAsync(cloudFile, m_estimatedCompressionRatio);
+                                DateTime? creationTime = await Utilities.InferFileCreationTimeUtcAsync(cloudFile, m_creationTimeInNamePattern);
+                                return (size, creationTime);
+                            });
+                        await targetBlock.SendAsync(new DataSource
+                        {
+                            CloudFileUri = $"{cloudFile.GetUnsecureUri()}",
+                            SafeCloudFileUri = cloudFile.GetFileUri(),
+                            SizeInBytes = res.Item1,
+                            CreationTimeUtc = res.Item2
+                        });
+                        Interlocked.Increment(ref m_objectsAccepted);
+                    }
+                    finally
                     {
                         m_listingLockOrNull?.Release();
-                        // We're done, don't need new stuff
-                        return;
                     }
-
-                    m_listingLockOrNull?.Release();
-                    long size = await Utilities.EstimateFileSizeAsync(cloudFile, m_estimatedCompressionRatio);
-                    DateTime? creationTime = await Utilities.InferFileCreationTimeUtcAsync(cloudFile, m_creationTimeInNamePattern);
-
-                    await targetBlock.SendAsync(new DataSource
-                    {
-                        CloudFileUri = $"{cloudFile.GetUnsecureUri()}",
-                        SafeCloudFileUri = cloudFile.GetFileUri(),
-                        SizeInBytes = size,
-                        CreationTimeUtc = creationTime
-                    });
-
-                    Interlocked.Increment(ref m_objectsAccepted);
                 }
             }
             catch (Exception ex)
             {
                 m_logger.LogError($"FilterFilesAsync failed on blob '{cloudFile.GetFileUri()}', error: {ex.Message}");
             }
+
         }
 
         private async Task IngestSingle(DataSource storageObject,

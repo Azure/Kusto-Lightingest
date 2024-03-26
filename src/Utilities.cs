@@ -125,9 +125,9 @@ namespace LightIngest
                 IReadOnlyDictionary<string, string> metadata = await cloudFileWithMetadata.GetFileMetaDataAsync();
                 long? estimatedSizeBytes = GetPositiveLongProperty(metadata,
 #if !OPEN_SOURCE_COMPILATION
-                    (cloudFile is S3PersistentStorageFile) ? Constants.AwsMetadaRawDataSize : 
+                    (cloudFile is S3PersistentStorageFile) ? Constants.AwsMetadataRawDataSize : 
 #endif 
-                    Constants.BlobMetadaRawDataSizeLegacy);
+                    Constants.BlobMetadataRawDataSizeLegacy);
                 if (estimatedSizeBytes.HasValue)
                 {
                     return estimatedSizeBytes.Value;
@@ -135,9 +135,9 @@ namespace LightIngest
 
                 estimatedSizeBytes = GetPositiveLongProperty(metadata,
 #if !OPEN_SOURCE_COMPILATION
-                    (cloudFile is S3PersistentStorageFile) ? Constants.AwsMetadaRawDataSize : 
+                    (cloudFile is S3PersistentStorageFile) ? Constants.AwsMetadataRawDataSize : 
 #endif
-                    Constants.BlobMetadaRawDataSize);
+                    Constants.BlobMetadataRawDataSize);
                 if (estimatedSizeBytes.HasValue)
                 {
                     return estimatedSizeBytes.Value;
