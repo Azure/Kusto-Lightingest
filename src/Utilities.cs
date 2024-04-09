@@ -382,9 +382,9 @@ namespace LightIngest
                     break;
                 }
 
-                if (suffixStartIndex - startIndex == dateTimeFormat.Format.Length)
+                if (suffixStartIndex - startIndex >= dateTimeFormat.Format.Length)
                 {
-                    var dateTimePortion = sourceString.Substring(startIndex, dateTimeFormat.Format.Length);
+                    var dateTimePortion = sourceString.Substring(startIndex, suffixStartIndex - startIndex);
 
                     DateTime ret;
                     if (ExtendedDateTime.TryParseExactUtc(dateTimePortion, dateTimeFormat.Format, out ret))
