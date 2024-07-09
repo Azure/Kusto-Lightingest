@@ -241,7 +241,7 @@ namespace LightIngest
                 (candidate) => serviceMatcher.Match(candidate),
                 calloutValidatorFactory,
                 featureFlags: null,
-                registerOnelakeFactory: false) ;
+                OneLakeAccessType.OneLakeService);
 
             m_persistentStorageFactory = persistentStorageManager.Factory;
             var azureStorageValidator = calloutValidatorFactory.GetValidator("AzureStorage");
