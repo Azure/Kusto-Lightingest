@@ -10,7 +10,7 @@ using System.Threading.Tasks;
 
 #if !OPEN_SOURCE_COMPILATION
 using Kusto.Cloud.Platform.AWS.PersistentStorage;
-using Kusto.Cloud.Platform.Azure.Storage;
+using Kusto.Cloud.Platform.Azure.Storage.XStore;
 #endif
 using Kusto.Cloud.Platform.Storage.PersistentStorage;
 using Kusto.Cloud.Platform.Utils;
@@ -259,7 +259,7 @@ namespace LightIngest
 #if OPEN_SOURCE_COMPILATION
                 return input.Contains(".blob.core.");
 #else
-                var container = CloudResourceUriParser.TryCreateCloudBlobContainer(input, out error, keyOrSasMandatory: false);
+                var container = CloudResourceUriParser2.TryCreateCloudBlobContainer(input, out error);
                 if (container == null)
                 {
                     return S3PersistentStorageUri.IsAmazonS3Uri(input);
