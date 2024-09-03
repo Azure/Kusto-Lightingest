@@ -259,11 +259,12 @@ namespace LightIngest
 #if OPEN_SOURCE_COMPILATION
                 return input.Contains(".blob.core.");
 #else
-                var container = CloudResourceUriParser2.TryCreateCloudBlobContainer(input, out error);
+                var container = CloudResourceUri2.TryParse(input, out error, authenticationMandatory: false);
                 if (container == null)
                 {
                     return S3PersistentStorageUri.IsAmazonS3Uri(input);
                 }
+
                 return true;
 #endif
             }
