@@ -85,6 +85,7 @@ namespace LightIngest
 
         private const string c_USER_PROMPT_AUTH = "PROMPT";
         private const string c_DEVICE_CODE_AUTH = "DEVICE_CODE";
+        private const string c_AZ_CLI = "AZ_CLI";
 
         private readonly ExtendedCommandLineArgs m_args;
         private readonly KustoQueuedIngestionProperties m_ingestionProperties;
@@ -711,6 +712,10 @@ namespace LightIngest
                 {
                     provider = new AadDeviceCodeTokenCredentialProvider(providerName, callback, m_connectToStorageLoginUri);
                 }
+            }
+            else if (c_AZ_CLI.Equals(m_connectToStorageWithUserAuth, StringComparison.OrdinalIgnoreCase))
+            {
+                provider = new AzCliTokenProvider(false);
             }
             else if (!string.IsNullOrEmpty(m_connectToStorageWithManagedIdentity))
             {

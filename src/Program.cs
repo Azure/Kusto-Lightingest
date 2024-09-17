@@ -43,6 +43,12 @@ namespace LightIngest
         public string ConnectWithManagedIdentity = null;
 
         [CommandLineArg(
+            "azCli",
+            "If set to 'true', uses the Azure CLI to authenticate to the Kusto service. The Azure CLI must be installed and logged in.",
+            ShortName = "azCli", Mandatory = false)]
+        public bool ConnectWithAzCli = false;
+
+        [CommandLineArg(
             "ingestWithManagedIdentity",
             "Client id of the managed identity (user-assigned or system-assigned) to be used by Kusto to download the data. Use \"system\" for system-assigned identity.\r\n" +
             "The managed identity needs 'Read' permissions over the blobs and to be configured in the Kusto service.",
@@ -76,7 +82,7 @@ namespace LightIngest
             "ConnectToStorageWithUserAuth",
             "Optionally authenticate to the data source storage service with user credentials for listing of the container. Use this if you cannot configure keys on the sourcePath.\r\n" +
             "The identity used here needs at least 'Read' and 'List' privileges on the container.\r\n" +
-            "Options: 'PROMPT', 'DEVICE_CODE'\r\n" +
+            "Options: 'PROMPT', 'DEVICE_CODE', 'AZ_CLI'\r\n" +
             "Default: Off",
             ShortName = "storageUserAuth",
             Mandatory = false)]
@@ -259,6 +265,7 @@ namespace LightIngest
 
             esb.AppendLine($"Connection string          : {ConnectionString}");
             if (!string.IsNullOrWhiteSpace(ConnectWithManagedIdentity)) { esb.AppendLine($"-managedIdentity           : {ConnectWithManagedIdentity}"); }
+            if(ConnectWithAzCli) { esb.AppendLine($"-az_cli                    : {ConnectWithAzCli}"); }
 
             esb.AppendLine($"-database                  : {DatabaseName}");
             esb.AppendLine($"-table                     : {TableName}");
@@ -521,6 +528,11 @@ namespace LightIngest
             // Add a touch for managed identities:
             if (!string.IsNullOrWhiteSpace(m_args.ConnectWithManagedIdentity))
             {
+                if (m_args.ConnectWithAzCli)
+                {
+                    throw new UtilsArgumentException("Invalid combination of command line arguments. Cannot connect to Kusto using both Managed-Identity and AzCli.", null);
+                }
+
                 if (kcsb.FederatedSecurity || kcsb.DstsFederatedSecurity)
                 {
                     kcsb.EmbeddedManagedIdentity = m_args.ConnectWithManagedIdentity;
@@ -529,6 +541,10 @@ namespace LightIngest
                 {
                     throw new UtilsArgumentException($"Command line arguments error. 'ManagedIdentity' can only be used with federated authentication.", null);
                 }
+            }
+            else if (m_args.ConnectWithAzCli)
+            {
+                kcsb = kcsb.WithAadAzCliAuthentication();
             }
             
             kcsb.SetConnectorDetails("LightIngest", Assembly.GetExecutingAssembly().GetProductVersionString() , sendUser: true);
