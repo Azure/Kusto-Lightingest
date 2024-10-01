@@ -140,7 +140,7 @@ namespace LightIngest
 #if !OPEN_SOURCE_COMPILATION  // PSL
         private Disposer m_disposer;
         private IPersistentStorageFactory m_persistentStorageFactory;
-        private BlobPersistentStorageFactory2 m_blob;
+        private BlobPersistentStorageFactory m_blob;
         private const int c_maxBlocksCapacity = 10000;
         private const int c_delayOnThrottlingMs = 50;
         private readonly TimeSpan c_ingestionRateTime = TimeSpan.FromSeconds(1);
@@ -246,7 +246,7 @@ namespace LightIngest
 
             m_persistentStorageFactory = persistentStorageManager.Factory;
             var azureStorageValidator = calloutValidatorFactory.GetValidator("AzureStorage");
-            m_blob = new BlobPersistentStorageFactory2(azureStorageValidator);
+            m_blob = new BlobPersistentStorageFactory(azureStorageValidator);
             m_disposer.Add(persistentStorageManager);
 #endif
         }
