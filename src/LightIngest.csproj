@@ -2,6 +2,7 @@
     <PropertyGroup>
         <KustoProps Condition="Exists('..\..\Directory.Build.props')">true</KustoProps>
         <OutputType>Exe</OutputType>
+        <WarningsNotAsErrors>$(WarningsNotAsErrors);NU5104</WarningsNotAsErrors>
     </PropertyGroup>
     
     <PropertyGroup Condition=" '$(KustoProps)' == 'true'">
