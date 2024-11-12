@@ -845,7 +845,7 @@ namespace LightIngest
                     ingestionProperties = baseIngestionProperties;
                 }
 
-                while (!await m_ingestionFixedWindowThrottlerPolicy.ShouldInvokeAsync().ConfigureAwait(false))
+                while (!m_ingestionFixedWindowThrottlerPolicy.ShouldInvoke())
                 {
                     await Task.Delay(TimeSpan.FromMilliseconds(c_delayOnThrottlingMs)).ConfigureAwait(false);
                 }
