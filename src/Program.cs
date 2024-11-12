@@ -265,7 +265,7 @@ namespace LightIngest
 
             esb.AppendLine($"Connection string          : {ConnectionString}");
             if (!string.IsNullOrWhiteSpace(ConnectWithManagedIdentity)) { esb.AppendLine($"-managedIdentity           : {ConnectWithManagedIdentity}"); }
-            if(ConnectWithAzCli) { esb.AppendLine($"-az_cli                    : {ConnectWithAzCli}"); }
+            if(ConnectWithAzCli) { esb.AppendLine($"-azCli                    : {ConnectWithAzCli}"); }
 
             esb.AppendLine($"-database                  : {DatabaseName}");
             esb.AppendLine($"-table                     : {TableName}");
