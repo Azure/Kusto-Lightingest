@@ -8,6 +8,7 @@ using System.Linq;
 using System.Reflection;
 using System.Text;
 using System.Threading;
+
 using Kusto.Cloud.Platform.Msal;
 using Kusto.Cloud.Platform.Utils;
 using Kusto.Data;
@@ -45,7 +46,7 @@ namespace LightIngest
         [CommandLineArg(
             "azCli",
             "If set to 'true', uses the Azure CLI to authenticate to the Kusto service. The Azure CLI must be installed and logged in.",
-            ShortName = "azCli", Mandatory = false)]
+            ShortName = "azCli", Mandatory = false, DefaultValue = false)]
         public bool ConnectWithAzCli = false;
 
         [CommandLineArg(
@@ -184,7 +185,6 @@ namespace LightIngest
             "Compression ratio hint. Useful when ingesting compressed files/blobs to help Kusto assess the raw data size.",
             ShortName = "cr", Mandatory = false)]
         public double EstimatedCompressionRatio = Constants.DefaultCompressionRatio;
-        #endregion
 
         [CommandLineArg(
             "noSizeLimit",
@@ -209,6 +209,10 @@ namespace LightIngest
             "Timeout (minutes) for the ingest operations. Defaults to 60 minutes.",
             Mandatory = false, DefaultValue = 60)]
         public int IngestTimeoutInMinutes = 60;
+
+        [CommandLineArg("wamless", "If set, disabled MSAL Web Account Manager (WAM) functionality", DefaultValue = false, ShortName = "nowam")]
+        public bool Wamless = false;
+        #endregion
 
         #region Parameters to tune the ingestion process (perf-wise)
         [CommandLineArg(
@@ -265,7 +269,7 @@ namespace LightIngest
 
             esb.AppendLine($"Connection string          : {ConnectionString}");
             if (!string.IsNullOrWhiteSpace(ConnectWithManagedIdentity)) { esb.AppendLine($"-managedIdentity           : {ConnectWithManagedIdentity}"); }
-            if(ConnectWithAzCli) { esb.AppendLine($"-az_cli                    : {ConnectWithAzCli}"); }
+            if(ConnectWithAzCli) { esb.AppendLine($"-azCli                     : {ConnectWithAzCli}"); }
 
             esb.AppendLine($"-database                  : {DatabaseName}");
             esb.AppendLine($"-table                     : {TableName}");
@@ -466,6 +470,15 @@ namespace LightIngest
         {
             try
             {
+                if (!m_args.Wamless)
+                {
+                    if (ExtendedEnvironment.IsWindows)
+                    {
+                        var hWnd = ExtendedConsole.GetConsoleWindowHandle();
+                        AadInteractiveTokenCredentialProviderBase.WAMWindowPointer = hWnd;
+                    }
+                }
+
                 // Setup the connection string: if database name argument is specified explicitly, it overrides the one provided in the connection string
                 m_args.ConnectionString = WellKnownConnectionStrings.GetConnectionStringByAliasOrNull(m_args.ConnectionString) ?? m_args.ConnectionString;
 
@@ -546,7 +559,7 @@ namespace LightIngest
             {
                 kcsb = kcsb.WithAadAzCliAuthentication();
             }
-            
+
             kcsb.SetConnectorDetails("LightIngest", Assembly.GetExecutingAssembly().GetProductVersionString() , sendUser: true);
             
             return kcsb;

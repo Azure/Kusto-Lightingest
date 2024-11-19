@@ -2,7 +2,6 @@
     <PropertyGroup>
         <KustoProps Condition="Exists('..\..\Directory.Build.props')">true</KustoProps>
         <OutputType>Exe</OutputType>
-        <WarningsNotAsErrors>$(WarningsNotAsErrors);NU5104</WarningsNotAsErrors>
     </PropertyGroup>
     
     <PropertyGroup Condition=" '$(KustoProps)' == 'true'">
@@ -13,7 +12,6 @@
         <TARGETING_NETCORE>true</TARGETING_NETCORE>
         <DefineConstants>$(DefineConstants);OPEN_SOURCE_COMPILATION</DefineConstants>
     </PropertyGroup>
-
     <ItemGroup Condition="'$(TARGETING_NETCORE)' == 'false'">
         <Reference Include="System.IO.Compression" />
         <Reference Include="Microsoft.CSharp" />
