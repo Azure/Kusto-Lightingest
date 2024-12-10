@@ -402,6 +402,11 @@ namespace LightIngest
         private static bool TryGetValueAsString(IReadOnlyDictionary<string, string> bag, string propertyName, bool caseSensitive, out string valueAsString)
         {
             valueAsString = null;
+            
+            if (bag.SafeFastNone())
+            {
+                return false;
+            }
 
             if (caseSensitive)
             {
