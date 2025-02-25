@@ -332,6 +332,7 @@ namespace LightIngest
 
         private static Program s_instance;
         private ExtendedCommandLineArgs m_args;
+        private RollingCsvTraceListener2 m_rollingCsvTraceListener2;
         private LoggerTracer m_logger;
 
         static int Main(string[] args)
@@ -379,7 +380,7 @@ namespace LightIngest
             m_args = new ExtendedCommandLineArgs();
             CommandLineArgsParser.Parse(args, m_args, autoHelp: true);
 
-            RollingCsvTraceListener2.CreateAndInitializeByCommandLineUtilitiesIfNeeded(
+            m_rollingCsvTraceListener2 = RollingCsvTraceListener2.CreateAndInitializeByCommandLineUtilitiesIfNeeded(
                 toolAssembly: typeof(Program).Assembly,
                 commandLineDevTracingValue: m_args.DevTracing);
 
@@ -524,6 +525,11 @@ namespace LightIngest
                 m_logger.LogError(ex.Message);
                 return 2;
             }
+            finally
+            {
+                TraceSourceManager.SuperFlush();
+                m_rollingCsvTraceListener2?.Dispose();
+            }
         }
 
         private KustoConnectionStringBuilder CreateKcsbFromArgs(string connectionString = null)
@@ -578,7 +584,7 @@ namespace LightIngest
             }
             catch (Exception ex)
             {
-                m_logger.LogWarning($"LightIngest failed to receive response from endpoint at '{m_kcsb.DataSource}'. Error: '{ex.Message}'");
+                m_logger.LogWarning($"LightIngest failed to receive response from endpoint at '{m_kcsb.DataSource}'. Error: '{ex.MessageEx(true)}'");
             }
 
             if (!string.IsNullOrWhiteSpace(serviceType) &&
@@ -588,7 +594,7 @@ namespace LightIngest
                 return serviceType;
             }
 
-            throw new UtilsArgumentException($"Invalid service URI specified: '{m_kcsb.DataSource}'. Please make sure you are using the correct URI and that the service is accessible.", null);
+            throw new UtilsArgumentException($"Failed to connect. See above error for more details.", null);
         }
 
         private KustoConnectionStringBuilder GetEngineKcsb(ICslAdminProvider adminClient)
@@ -866,8 +872,7 @@ namespace LightIngest
             }
         }
     }
-
-#endregion
+    #endregion
 
     #region class PrivateTracer
     internal class SharedTracer : TraceSourceBase<SharedTracer>

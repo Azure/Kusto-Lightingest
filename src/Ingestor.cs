@@ -160,7 +160,7 @@ namespace LightIngest
 
         private string DirectIngestStats()
         {
-            return $"{BasicCountersSnapshot()}, uploaded to blob store: [{Interlocked.Read(ref m_filesUploaded),7}]. " +
+            return BasicCountersSnapshot() + (m_bFileSystem ? ", uploaded to blob store: [{Interlocked.Read(ref m_filesUploaded),7}]. " : "") +
                    $"Batches produced: [{Interlocked.Read(ref m_batchesProduced),7}], ingested: [{Interlocked.Read(ref m_batchesIngested),7}]";
         }
         #endregion Statistics methods
@@ -823,6 +823,9 @@ namespace LightIngest
                                   KustoQueuedIngestionProperties baseIngestionProperties,
                                   string ingestWithManagedIdentity)
         {
+            var stopwatch = ExtendedStopwatch.StartNew();
+
+            var fileNameForTrace = fromFileSystem ? storageObject.FileSystemPath : storageObject.SafeCloudFileUri; 
             try
             {
                 if (objectsToTake >= 0 && objectsToTake <= Interlocked.Read(ref m_objectsPosted))
@@ -868,6 +871,9 @@ namespace LightIngest
                             ingestionProperties,
                             new StorageSourceOptions() { DeleteSourceOnSuccess = deleteSourcesOnSuccess, Size = storageObject.SizeInBytes }
                         ).ConfigureAwait(false);
+            
+                // Using the tracer so it doesnt appear on console but only in log files
+                m_logger.Tracer.TraceInformation($"IngestSingle: File {fileNameForTrace} ended successfully after {stopwatch.ElapsedMilliseconds} millis.");
 
                 Interlocked.Increment(ref m_objectsPosted);
 
@@ -881,7 +887,7 @@ namespace LightIngest
             }
             catch (Exception ex)
             {
-                m_logger.LogError($"IngestSingle failed on blob '{storageObject.SafeCloudFileUri}', error:  {ex.MessageEx(true)}");
+                m_logger.LogError($"IngestSingle failed on blob '{fileNameForTrace}', after '{stopwatch.ElapsedMilliseconds}' millis, error: {ex.MessageEx(true)}");
             }
         }
 
@@ -897,7 +903,6 @@ namespace LightIngest
 
             m_logger.LogInfo($"==> {sizeString}{creationTimeString}{pathString}");
         }
-
 
         private IPersistentStorageContainer AcquireTempBlobContainer(ICslAdminProvider kustoClient)
         {
