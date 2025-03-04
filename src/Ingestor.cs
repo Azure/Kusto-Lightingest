@@ -609,7 +609,9 @@ namespace LightIngest
                     var cmd = CslCommandGenerator.GenerateTableIngestPullCommand(ingestionProperties.TableName, batchUris, false,
                         extensions: ingestionProperties.AdditionalProperties,
                         tags: ingestionProperties.AdditionalTags);
-                    var cmdResult = kustoClient.ExecuteControlCommand<DataIngestPullCommandResult>(ingestionProperties.DatabaseName, cmd);
+                    var clientRequestProperties = new ClientRequestProperties();
+                    clientRequestProperties.SetOption(ClientRequestProperties.OptionServerTimeout, TimeSpan.FromMinutes(30));
+                    var cmdResult = kustoClient.ExecuteControlCommand<DataIngestPullCommandResult>(ingestionProperties.DatabaseName, cmd, clientRequestProperties);
 
                     // Get the operation result
                     cmd = CslCommandGenerator.GenerateOperationsShowCommand(cmdResult.First().OperationId);
