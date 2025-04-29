@@ -328,7 +328,7 @@ namespace LightIngest
                 }
 
                 var uri = new Uri(source);
-                var targetHost = uri.Host;
+                var targetHost = uri.IdnHost;
 
                 var targetAddresses = System.Net.Dns.GetHostAddresses(targetHost);
                 var localAddresses = System.Net.Dns.GetHostAddresses(System.Net.Dns.GetHostName());
@@ -424,7 +424,6 @@ namespace LightIngest
 
             return false;
         }
-
         #endregion
     }
 }
