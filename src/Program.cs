@@ -15,6 +15,7 @@ using Kusto.Data;
 using Kusto.Data.Common;
 using Kusto.Data.Net.Client;
 using Kusto.Ingest;
+using Kusto.Ingest.Common;
 
 namespace LightIngest
 {
