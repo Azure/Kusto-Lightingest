@@ -16,7 +16,7 @@ LightIngest.exe "https://ingest-{Cluster name and region}.kusto.windows.net;Fed=
 LightIngest is published as a [dotnet tool](https://learn.microsoft.com/en-us/dotnet/core/tools/global-tools) from [this feed](https://www.nuget.org/packages/Microsoft.Azure.Kusto.LightIngest/12.0.0-preview.1)
 Dotnet tools require .Net SDK >= 6.0 installed and run installation command:
 ```.NET CLI
-dotnet tool install --global Microsoft.Azure.Kusto.LightIngest --version 12.0.0-preview.1
+dotnet tool install --global Microsoft.Azure.Kusto.LightIngest --version 13.0.2
 ```
 To run the tool simply use its name:
 ```.NET CLI
