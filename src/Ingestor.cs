@@ -5,7 +5,6 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
@@ -33,6 +32,7 @@ using System.Data;
 
 namespace LightIngest
 {
+    #region Storage Matcher
     /// <summary>
     /// Check if a hostname matches a known storage pattern 
     /// This class bypasses the need to rely on Cloud Settings
@@ -75,7 +75,9 @@ namespace LightIngest
             return (IsMatch: false, ServiceName: null);
         }
     }
+    #endregion
 
+    #region Ingestor
     internal class Ingestor
     {
         #region Data members
@@ -108,13 +110,10 @@ namespace LightIngest
         private readonly string m_connectToStorageLoginUri = null;
         private readonly string m_connectToStorageWithManagedIdentity = null;
         private FixedWindowThrottlerPolicy m_ingestionFixedWindowThrottlerPolicy;
+        private FixedWindowThrottlerPolicy m_ingestionTrackingFixedWindowThrottlerPolicy;
         private FixedWindowThrottlerPolicy m_listingFixedWindowThrottlerPolicy;
 
         SemaphoreSlim m_listingLockOrNull;
-
-        // Ingestion results for queued ingest flow when confirmation is required
-        private object m_ingestionResultsLock = new object();
-        private IList<IKustoIngestionResult> m_ingestionResults = null;
 
         // Intermediate placeholder for direct ingest flow
         private object m_listIntermediateSourcesLock = new object();
@@ -212,7 +211,6 @@ namespace LightIngest
             {
                 m_ingestionProperties.ReportLevel = IngestionReportLevel.FailuresAndSuccesses;
                 m_ingestionProperties.ReportMethod = IngestionReportMethod.Table;
-                m_ingestionResults = new List<IKustoIngestionResult>();
             }
             else
             {
@@ -223,6 +221,7 @@ namespace LightIngest
             m_ingestionProperties.IgnoreSizeLimit = m_args.NoSizeLimit;
 
             m_ingestionFixedWindowThrottlerPolicy = new FixedWindowThrottlerPolicy(args.IngestionRateCount, c_ingestionRateTime);
+            m_ingestionTrackingFixedWindowThrottlerPolicy = new FixedWindowThrottlerPolicy(args.IngestionRateCount, c_ingestionRateTime);
             m_listingFixedWindowThrottlerPolicy = new FixedWindowThrottlerPolicy(args.ListingRateCount, c_ingestionRateTime);
 
             m_listingLockOrNull = m_objectsCountQuota > 0 ? new SemaphoreSlim(initialCount: 1, maxCount: 1) : null;
@@ -253,14 +252,6 @@ namespace LightIngest
 
         private void Reset()
         {
-            if (m_ingestionResults != null)
-            {
-                lock (m_ingestionResultsLock)
-                {
-                    m_ingestionResults.Clear();
-                }
-            }
-
             if (m_listIntermediateSources != null)
             {
                 lock (m_listIntermediateSourcesLock)
@@ -299,22 +290,41 @@ namespace LightIngest
         }
         #endregion Construction and initialization
 
+        #region Execution
         internal void RunQueuedIngest(KustoConnectionStringBuilder kcsb)
         {
+            Tracker tracker = null;
+
             Reset();
 
             var stopwatch = ExtendedStopwatch.StartNew();
             using (var ingestClient = KustoIngestFactory.CreateQueuedIngestClient(kcsb))
             {
+                ActionBlock<(string, IngestionStatus, Exception)> reportBlock = null;
+                ActionBlock<(string, IKustoIngestionResult)> trackBlock = null;
                 ActionBlock<string> listObjectsBlock = null;
                 ActionBlock<IPersistentStorageFile> filterObjectsBlock = null;
                 ActionBlock<DataSource> ingestBlock = null;
 
+                if (m_bWaitForIngestCompletion)
+                {
+                    tracker = new Tracker(m_ingestCompletionTimeout, m_logger, m_ingestionTrackingFixedWindowThrottlerPolicy);
+
+                    reportBlock = new ActionBlock<(string Path, IngestionStatus LastStatus, Exception LastException)>(
+                        record => tracker.SaveTrackingStatusUnderLock(record.Path, record.LastStatus, record.LastException),
+                        new ExecutionDataflowBlockOptions { MaxDegreeOfParallelism = 1 }); // No paralelism is what keeps us thread safe
+
+                    trackBlock = new ActionBlock<(string Path, IKustoIngestionResult IngestionResult)>(
+                        record => tracker.TryWaitForStatusAsync(record.Path, record.IngestionResult, (p, s, e) => reportBlock.Post((p, s, e))),
+                        new ExecutionDataflowBlockOptions { MaxDegreeOfParallelism = ExtendedEnvironment.RestrictedProcessorCount, BoundedCapacity = c_maxBlocksCapacity, EnsureOrdered = false });
+                    trackBlock.Completion.ContinueWith(delegate { reportBlock.Complete(); });
+                }
+
                 if (m_bFileSystem) // Data is in local files
                 {
                     ingestBlock = new ActionBlock<DataSource>(
-                        record => IngestSingle(record, m_objectsCountQuota, ingestClient, m_bFileSystem, false, m_ingestionProperties, m_ingestWithManagedIdentity),
-                        new ExecutionDataflowBlockOptions { MaxDegreeOfParallelism = ExtendedEnvironment.RestrictedProcessorCount });
+                    record => IngestSingle(record, m_objectsCountQuota, ingestClient, m_bFileSystem, false, m_ingestionProperties, m_ingestWithManagedIdentity, trackBlock, reportBlock),
+                        new ExecutionDataflowBlockOptions { MaxDegreeOfParallelism = ExtendedEnvironment.RestrictedProcessorCount, BoundedCapacity = c_maxBlocksCapacity, EnsureOrdered = false });
 
                     listObjectsBlock = new ActionBlock<string>(
                         sourcePath => ListAndFilterFiles(sourcePath, m_args.Pattern, m_objectsCountQuota, ingestBlock),
@@ -324,7 +334,7 @@ namespace LightIngest
                 else // Input is in blobs
                 {
                     ingestBlock = new ActionBlock<DataSource>(
-                        record => IngestSingle(record, m_objectsCountQuota, ingestClient, m_bFileSystem, false, m_ingestionProperties, m_ingestWithManagedIdentity),
+                        record => IngestSingle(record, m_objectsCountQuota, ingestClient, m_bFileSystem, false, m_ingestionProperties, m_ingestWithManagedIdentity, trackBlock, reportBlock),
                         new ExecutionDataflowBlockOptions { MaxDegreeOfParallelism = ExtendedEnvironment.RestrictedProcessorCount, BoundedCapacity = c_maxBlocksCapacity, EnsureOrdered = false });
 
                     // ListFiles calls PSL EnumerateFiles which accepts a pattern but BlobPersistentStorageFactory2 doesn't use the full pattern
@@ -339,35 +349,59 @@ namespace LightIngest
                         new ExecutionDataflowBlockOptions { MaxDegreeOfParallelism = 1 });
                     listObjectsBlock.Completion.ContinueWith(delegate { filterObjectsBlock.Complete(); });
                 }
+
                 // Debugging: Allow the debugger to retrieve the DataFlow blocks:
                 Kusto.Cloud.Platform.Debugging.RegisterWeakReference(nameof(ingestBlock), ingestBlock);
                 Kusto.Cloud.Platform.Debugging.RegisterWeakReference(nameof(filterObjectsBlock), filterObjectsBlock);
                 Kusto.Cloud.Platform.Debugging.RegisterWeakReference(nameof(listObjectsBlock), listObjectsBlock);
 
-                m_logger.LogVerbose("==> Starting...");
+                m_logger.LogAlways("==> Starting...");
+                tracker?.Initialize();
                 listObjectsBlock.Post(m_args.SourcePath);
                 listObjectsBlock.Complete();
 
-                bool bPipelineCompleted = false;
+                bool queueCompleted = false;
+                bool trackingCompleted = false;
+
+                // Wait for queing to complete
                 do
                 {
-                    bPipelineCompleted = ingestBlock.Completion.Wait(TimeSpan.FromSeconds(10));
+                    queueCompleted = ingestBlock.Completion.Wait(TimeSpan.FromSeconds(10));
 
-                    m_logger.LogInfo($"==> {QueuedIngestStats()}");
-                } while (!bPipelineCompleted);
+                    var trackingBrief = m_bWaitForIngestCompletion ? tracker.GetBriefProgressReport() : string.Empty;
+                    
+                    m_logger.LogInfo($"==> {QueuedIngestStats()} {trackingBrief}");
+                } 
+                while (!queueCompleted);
+
+                // Wait for tracking to complete
+                if (m_bWaitForIngestCompletion)
+                {
+                    trackBlock.Complete();
+                    tracker.StartFinalWaitPeriod();
+
+                    do
+                    {
+                        trackingCompleted = trackBlock.Completion.Wait(TimeSpan.FromSeconds(10));
+
+                        m_logger.LogInfo($"==> {tracker.GetBriefProgressReport()}");
+                    } 
+                    while (!trackingCompleted);
+
+                    tracker.Close();
+                }
 
                 stopwatch.Stop();
             }
 
-            m_logger.LogSuccess($"    Done. Time elapsed: {stopwatch.Elapsed:c}");
-            m_logger.LogSuccess($"    {QueuedIngestStats()}");
-
-            // Wait for ingestion completion, if required
-            if (m_bWaitForIngestCompletion && m_ingestionResults.SafeFastAny())
+            if (m_bWaitForIngestCompletion)
             {
-                m_logger.LogInfo("==> Waiting for ingestion completion...");
-                WaitForIngestionResult(m_ingestionResults, m_ingestCompletionTimeout);
-                m_logger.LogInfo("==> Done.");
+                tracker.ReportDetailedStatus(stopwatch.Elapsed, m_objectsListed, m_objectsAccepted, m_objectsPosted);
+            }
+            else
+            {
+                m_logger.LogSuccess($"    Done. Time elapsed: {stopwatch.Elapsed:c}");
+                m_logger.LogSuccess($"    {QueuedIngestStats()}");
             }
         }
 
@@ -501,6 +535,7 @@ namespace LightIngest
             m_logger.LogSuccess($"    Done. Time elapsed: {stopwatch.Elapsed:c}");
             m_logger.LogSuccess($"    {BasicCountersSnapshot()}, accepted: [{Interlocked.Read(ref m_objectsAccepted),7}]");
         }
+        #endregion
 
         #region Private helper methods
         private void RunPrepareBatchesForDirectIngest(ICslAdminProvider kustoClient, bool kustoRunningLocally)
@@ -635,7 +670,7 @@ namespace LightIngest
         {
             try
             {
-                m_logger.LogVerbose($"ListAndFilterFiles: enumerating files under '{sourcePath}'");
+                m_logger.LogInfo($"ListAndFilterFiles: enumerating files under '{sourcePath}'");
 
                 // sourcePath is a file path
                 if (File.Exists(sourcePath))
@@ -823,7 +858,9 @@ namespace LightIngest
                                   bool fromFileSystem,
                                   bool deleteSourcesOnSuccess,
                                   KustoQueuedIngestionProperties baseIngestionProperties,
-                                  string ingestWithManagedIdentity)
+                                  string ingestWithManagedIdentity,
+                                  ActionBlock<(string, IKustoIngestionResult)> trackBlock,
+                                  ActionBlock<(string, IngestionStatus, Exception)> reportBlock)
         {
             var stopwatch = ExtendedStopwatch.StartNew();
 
@@ -879,17 +916,21 @@ namespace LightIngest
 
                 Interlocked.Increment(ref m_objectsPosted);
 
+                // Follow up with ingestion status tracking 
                 if (m_bWaitForIngestCompletion)
                 {
-                    lock (m_ingestionResultsLock)
-                    {
-                        m_ingestionResults.Add(result);
-                    }
+                    trackBlock.Post((storageObject.FileSystemPath, result));
                 }
             }
             catch (Exception ex)
             {
                 m_logger.LogError($"IngestSingle failed on blob '{fileNameForTrace}', after '{stopwatch.ElapsedMilliseconds}' millis, error: {ex.MessageEx(true)}");
+
+                // Report the error
+                if (m_bWaitForIngestCompletion)
+                {
+                    reportBlock.Post((storageObject.FileSystemPath, null, ex));
+                }
             }
         }
 
@@ -1076,116 +1117,6 @@ namespace LightIngest
             return ingestionBatches;
         }
 
-        private void WaitForIngestionResult(IEnumerable<IKustoIngestionResult> ingestionResults, TimeSpan ingestOperationTimeout)
-        {
-            if (ingestionResults.SafeFastNone())
-            {
-                return;
-            }
-
-            var stopwatch = ExtendedStopwatch.StartNew();
-            m_logger.LogInfo($"==> Waiting for ingest operation(s) completion (will timeout after {ingestOperationTimeout.TotalMinutes} minutes)...");
-
-            IEnumerable<IngestionStatus> ingestionStatuses = null;
-            long monitoredIngestionOperations = 0, completedIngestionOperations = 0;
-
-            do
-            {
-                ingestionStatuses = ingestionResults.SelectMany((ir) => ir.GetIngestionStatusCollection()).ToList();
-                monitoredIngestionOperations = ingestionStatuses.SafeFastCount();
-                completedIngestionOperations = ingestionStatuses.Count((status) => status.Status != Status.Pending);
-
-                m_logger.LogVerbose($"==> [{completedIngestionOperations,7}] out of [{monitoredIngestionOperations,7}] ingest operations completed. Time elapsed: {stopwatch.Elapsed:c}");
-                if (completedIngestionOperations == monitoredIngestionOperations)
-                {
-                    break;
-                }
-
-                Thread.Sleep(TimeSpan.FromSeconds(30));
-            } while (stopwatch.Elapsed < ingestOperationTimeout);
-            stopwatch.Stop();
-
-            // Status breakdown:
-            // Succeeded            [Terminal, operation completed successfully]
-            // Failed               [Terminal, operation failed]
-            // PartiallySucceeded   [Terminal, operation succeeded for part of the data]
-            // Skipped              [Terminal, operation ignored (no data or was already ingested)]
-            // Queued / Pending     [Intermediate, operation has been posted off for execution on the service]
-
-            var successfulOperations = ingestionStatuses.Count((status) => status.Status == Status.Succeeded);
-            var partiallySucceededOperations = ingestionStatuses.Count((status) => status.Status == Status.PartiallySucceeded);
-            var failedOperations = ingestionStatuses.Count((status) => status.Status == Status.Failed);
-            var skippedOperations = ingestionStatuses.Count((status) => status.Status == Status.Skipped);
-            var pendingOperations = ingestionStatuses.Count((status) => status.Status == Status.Pending || status.Status == Status.Queued);
-
-            if (successfulOperations == monitoredIngestionOperations)
-            {
-                m_logger.LogSuccess($"    Successfully completed          : [{successfulOperations,7}] out of [{monitoredIngestionOperations,7}] ingest operations.");
-                return;
-            }
-
-            // Break down non-successful operations
-            m_logger.LogWarning("Not all the operations completed successfully:");
-
-            var sb = new StringBuilder();
-            sb.AppendLine();
-
-            if (failedOperations > 0)
-            {
-                sb.AppendLine($"Failed operations: [{failedOperations,7}] out of [{monitoredIngestionOperations,7}] ingest operations have failed.");
-                sb.AppendLine("These operations failed permanently and no data was ingested. See the complete list for details.");
-                ingestionStatuses.Where(record => record.Status == Status.Failed).ForEach(record =>
-                {
-                    sb.AppendLine($"-   Failed to ingest '{record.IngestionSourcePath}', Id '{record.IngestionSourceId}'. Operation status is '{record.Status}'.");
-                    sb.AppendLine($"    Failure details: {record.Details}");
-                });
-                sb.AppendLine();
-            }
-
-            if (partiallySucceededOperations > 0)
-            {
-                sb.AppendLine($"Partially succeeded operations: [{partiallySucceededOperations,7}] out of [{monitoredIngestionOperations,7}] ingest operations have completed partially.");
-                sb.AppendLine("These operations succeeded partially, i.e., some data could have been ingested. See the complete list for details.");
-                ingestionStatuses.Where(record => record.Status == Status.PartiallySucceeded).ForEach(record =>
-                {
-                    sb.AppendLine($"-   Partially succeeded to ingest '{record.IngestionSourcePath}', Id '{record.IngestionSourceId}'. Operation status is '{record.Status}'.");
-                    sb.AppendLine($"    Operation details: {record.Details}");
-                });
-                sb.AppendLine();
-            }
-
-            if (skippedOperations > 0)
-            {
-                sb.AppendLine($"Skipped operations: [{skippedOperations,7}] out of [{monitoredIngestionOperations,7}] ingest operations have been skipped.");
-                sb.AppendLine("These operations were skipped and resulted in no data being ingested. These could indicate empty streams. See the complete list for details.");
-                ingestionStatuses.Where(record => record.Status == Status.Skipped).ForEach(record =>
-                {
-                    sb.AppendLine($"-   Did not ingest '{record.IngestionSourcePath}', Id '{record.IngestionSourceId}'. Operation status is '{record.Status}'.");
-                    sb.AppendLine($"    Operation details: {record.Details}");
-                });
-                sb.AppendLine();
-            }
-
-            if (pendingOperations > 0)
-            {
-                sb.AppendLine($"Pending operations: [{pendingOperations,7}] out of [{monitoredIngestionOperations,7}] ingest operations are still pending.");
-                sb.AppendLine("These operations have not completed yet, and are waiting to be executed by the service. See the complete list for details.");
-                ingestionStatuses.Where(record => record.Status == Status.Pending || record.Status == Status.Queued).ForEach(record =>
-                {
-                    sb.AppendLine($"-   Operation pending for '{record.IngestionSourcePath}', Id '{record.IngestionSourceId}'. Operation status is '{record.Status}'.");
-                });
-                sb.AppendLine();
-            }
-
-            sb.AppendLine($"Successfully completed          : [{successfulOperations,7}] out of [{monitoredIngestionOperations,7}] ingest operations.");
-            sb.Append(partiallySucceededOperations > 0 ? $"Partially succeeded (see above) : [{partiallySucceededOperations,7}] out of [{monitoredIngestionOperations,7}] ingest operations.{Environment.NewLine}" : string.Empty);
-            sb.Append(failedOperations > 0 ? $"Failed (see above)              : [{failedOperations,7}] out of [{monitoredIngestionOperations,7}] ingest operations.{Environment.NewLine}" : string.Empty);
-            sb.Append(skippedOperations > 0 ? $"Skipped (see above)             : [{skippedOperations,7}] out of [{monitoredIngestionOperations,7}] ingest operations.{Environment.NewLine}" : string.Empty);
-            sb.Append(pendingOperations > 0 ? $"Pending (still in progress)     : [{pendingOperations,7}] out of [{monitoredIngestionOperations,7}] ingest operations.{Environment.NewLine}" : string.Empty);
-            sb.AppendLine();
-
-            m_logger.LogInfo(sb.ToString());
-        }
         #endregion // Private helper methods
 
         #region DataSource and DataSourcesBatch
@@ -1229,4 +1160,5 @@ namespace LightIngest
         }
         #endregion
     }
+    #endregion
 }

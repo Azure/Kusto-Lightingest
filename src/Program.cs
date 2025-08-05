@@ -385,7 +385,7 @@ namespace LightIngest
                 toolAssembly: typeof(Program).Assembly,
                 commandLineDevTracingValue: m_args.DevTracing);
 
-            m_logger = new LoggerTracer(SharedTracer.Tracer);
+            m_logger = new LoggerTracer(SharedTracer.Tracer, writeToConsole: true, consoleFollowsLogLevels: true);
             m_logger.LogVerbose($"LightIngest invoked with the following arguments: {args.SafeFastStringJoin(" ")}");
         }
 
