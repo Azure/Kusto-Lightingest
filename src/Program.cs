@@ -52,7 +52,7 @@ namespace LightIngest
 
         [CommandLineArg(
             "ingestWithManagedIdentity",
-            "Client id of the managed identity (user-assigned or system-assigned) to be used by Kusto to download the data. Use \"system\" for system-assigned identity.\r\n" +
+            "Object id of the managed identity (user-assigned or system-assigned) to be used by Kusto to download the data. Use \"system\" for system-assigned identity.\r\n" +
             "The managed identity needs 'Read' permissions over the blobs and to be configured in the Kusto service.",
             ShortName = "ingestmi", Mandatory = false)]
         public string IngestWithManagedIdentity = null;
