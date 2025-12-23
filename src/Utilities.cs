@@ -12,6 +12,7 @@ using System.Threading.Tasks;
 using Kusto.Cloud.Platform.AWS.PersistentStorage;
 using Kusto.Cloud.Platform.Azure.Storage.XStore;
 #endif
+using Kusto.Cloud.Platform.Net;
 using Kusto.Cloud.Platform.Storage.PersistentStorage;
 using Kusto.Cloud.Platform.Utils;
 using Kusto.Data;
@@ -330,8 +331,8 @@ namespace LightIngest
                 var uri = new Uri(source);
                 var targetHost = uri.IdnHost;
 
-                var targetAddresses = System.Net.Dns.GetHostAddresses(targetHost);
-                var localAddresses = System.Net.Dns.GetHostAddresses(System.Net.Dns.GetHostName());
+                var targetAddresses = ExtendedDns.GetHostAddresses(targetHost);
+                var localAddresses = ExtendedDns.GetHostAddresses(System.Net.Dns.GetHostName());
 
                 foreach (var targetAddress in targetAddresses)
                 {

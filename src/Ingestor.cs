@@ -1,4 +1,4 @@
-﻿// Copyright (c) Microsoft Corporation.
+// Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
 using System;
@@ -29,19 +29,18 @@ using System.Collections;
 using System.Data;
 #endif
 
-
 namespace LightIngest
 {
     #region Storage Matcher
     /// <summary>
-    /// Check if a hostname matches a known storage pattern 
+    /// Check if a hostname matches a known storage pattern
     /// This class bypasses the need to rely on Cloud Settings
     /// </summary>
     public class AzureStorageMatcher
     {
         private static readonly List<(string SearchPattern, string ServiceName)> s_azureStorageDnsSegments = new List<(string SearchPattern, string ServiceName)>()
         {
-            // Azure Storage 
+            // Azure Storage
             ( ".blob.core.", KustoPersistentStorageManager.AzureStorageServiceName ),
             ( ".file.core.", KustoPersistentStorageManager.AzureStorageServiceName ),
             ( ".queue.core.", KustoPersistentStorageManager.AzureStorageServiceName ),
@@ -64,8 +63,8 @@ namespace LightIngest
 
         public (bool IsMatch, string ServiceName) Match(string candidate)
         {
-            foreach(var rule in s_azureStorageDnsSegments) 
-            { 
+            foreach(var rule in s_azureStorageDnsSegments)
+            {
                 if (candidate.Contains(rule.SearchPattern))
                 {
                     return (IsMatch: true, ServiceName: rule.ServiceName);
@@ -312,7 +311,7 @@ namespace LightIngest
 
                     reportBlock = new ActionBlock<(string Path, IngestionStatus LastStatus, Exception LastException)>(
                         record => tracker.SaveTrackingStatusUnderLock(record.Path, record.LastStatus, record.LastException),
-                        new ExecutionDataflowBlockOptions { MaxDegreeOfParallelism = 1 }); // No paralelism is what keeps us thread safe
+                        new ExecutionDataflowBlockOptions { MaxDegreeOfParallelism = 1 }); // No parallelism is what keeps us thread safe
 
                     trackBlock = new ActionBlock<(string Path, IKustoIngestionResult IngestionResult)>(
                         record => tracker.TryWaitForStatusAsync(record.Path, record.IngestionResult, (p, s, e) => reportBlock.Post((p, s, e))),
@@ -361,17 +360,16 @@ namespace LightIngest
                 listObjectsBlock.Complete();
 
                 bool queueCompleted = false;
-                bool trackingCompleted = false;
 
-                // Wait for queing to complete
+                // Wait for queueing to complete
                 do
                 {
                     queueCompleted = ingestBlock.Completion.Wait(TimeSpan.FromSeconds(10));
 
                     var trackingBrief = m_bWaitForIngestCompletion ? tracker.GetBriefProgressReport() : string.Empty;
-                    
+
                     m_logger.LogInfo($"==> {QueuedIngestStats()} {trackingBrief}");
-                } 
+                }
                 while (!queueCompleted);
 
                 // Wait for tracking to complete
@@ -380,12 +378,13 @@ namespace LightIngest
                     trackBlock.Complete();
                     tracker.StartFinalWaitPeriod();
 
+                    bool trackingCompleted;
                     do
                     {
                         trackingCompleted = trackBlock.Completion.Wait(TimeSpan.FromSeconds(10));
 
                         m_logger.LogInfo($"==> {tracker.GetBriefProgressReport()}");
-                    } 
+                    }
                     while (!trackingCompleted);
 
                     tracker.Close();
@@ -663,7 +662,6 @@ namespace LightIngest
                     m_logger.LogError($"Error in RunSyncDirectIngestInBatches: {ex.Message}");
                 }
             });
-
         }
 
         private void ListAndFilterFiles(string sourcePath, string pattern, int filesToTake, ITargetBlock<DataSource> targetBlock)
@@ -739,7 +737,6 @@ namespace LightIngest
                     Console.WriteLine("Device Code Message: {0}", msg);
                     return Task.CompletedTask;
                 };
-
 
                 if (string.IsNullOrWhiteSpace(m_connectToStorageLoginUri))
                 {
@@ -864,7 +861,7 @@ namespace LightIngest
         {
             var stopwatch = ExtendedStopwatch.StartNew();
 
-            var fileNameForTrace = fromFileSystem ? storageObject.FileSystemPath : storageObject.SafeCloudFileUri; 
+            var fileNameForTrace = fromFileSystem ? storageObject.FileSystemPath : storageObject.SafeCloudFileUri;
             try
             {
                 if (objectsToTake >= 0 && objectsToTake <= Interlocked.Read(ref m_objectsPosted))
@@ -910,13 +907,14 @@ namespace LightIngest
                             ingestionProperties,
                             new StorageSourceOptions() { DeleteSourceOnSuccess = deleteSourcesOnSuccess, Size = storageObject.SizeInBytes }
                         ).ConfigureAwait(false);
-            
-                // Using the tracer so it doesnt appear on console but only in log files
-                m_logger.Tracer.TraceInformation($"IngestSingle: File {fileNameForTrace} ended successfully after {stopwatch.ElapsedMilliseconds} millis.");
+
+                // Using the tracer so it doesn't appear on console but only in log files
+                m_logger.Tracer.TraceInformation("IngestSingle: File {0} ended successfully after {1} millis.",
+                    fileNameForTrace, stopwatch.ElapsedMilliseconds);
 
                 Interlocked.Increment(ref m_objectsPosted);
 
-                // Follow up with ingestion status tracking 
+                // Follow up with ingestion status tracking
                 if (m_bWaitForIngestCompletion)
                 {
                     trackBlock.Post((storageObject.FileSystemPath, result));
@@ -1129,7 +1127,6 @@ namespace LightIngest
             public long SizeInBytes { get; set; } = 0L;
             public DateTime? CreationTimeUtc { get; set; } = null;
         }
-
 
         internal class DataSourcesBatch
         {
